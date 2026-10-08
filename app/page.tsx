@@ -1,160 +1,88 @@
+// app/page.tsx
 "use client";
 
-import { useState } from "react";
-import { SourceCitationCard } from "@/components/SourceCitationCard";
-import { RetrievedChunk, QueryResponse, IngestResponse } from "@/types/rag";
+import Link from "next/link";
+import { Abstract3DNode } from "@/components/Abstract3DNode";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { ArrowRight, Code, MessageSquare, Globe } from "lucide-react";
 
-const API_BASE_URL = "http://localhost:8000";
-
-export default function Home() {
-  // Upload State
-  const [file, setFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadMessage, setUploadMessage] = useState<string>("");
-
-  // Query State
-  const [query, setQuery] = useState("");
-  const [isSearching, setIsSearching] = useState(false);
-  const [answer, setAnswer] = useState("");
-  const [sources, setSources] = useState<RetrievedChunk[]>([]);
-
-  // Handle PDF Upload
-  const handleUpload = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!file) return;
-
-    setIsUploading(true);
-    setUploadMessage("Processing PDF with Unstructured...");
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/ingest`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) throw new Error("Upload failed");
-
-      const data: IngestResponse = await res.json();
-      setUploadMessage(`Success: ${data.message}`);
-    } catch (err: any) {
-      setUploadMessage(`Error: ${err.message || "Failed to process document"}`);
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  // Handle RAG Search
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-
-    setIsSearching(true);
-    setAnswer("");
-    setSources([]);
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, top_k: 3 }),
-      });
-
-      if (!res.ok) throw new Error("Query execution failed");
-
-      const data: QueryResponse = await res.json();
-      setAnswer(data.answer);
-      setSources(data.sources);
-    } catch (err: any) {
-      setAnswer(`Error: ${err.message || "Something went wrong"}`);
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
+export default function LandingPage() {
   return (
-    <main className="min-h-screen bg-slate-100 dark:bg-slate-950 p-6 md:p-12 text-slate-900 dark:text-slate-100">
-      <div className="max-w-4xl mx-auto space-y-8">
-        
-        {/* Header */}
-        <header className="border-b pb-4 border-slate-300 dark:border-slate-800">
-          <h1 className="text-3xl font-bold tracking-tight">Multi-Modal RAG Explorer</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Upload complex PDFs containing text, tables, and images, then ask structured questions.
+    <div className="min-h-screen flex flex-col justify-between px-6 md:px-16 py-8 relative overflow-hidden">
+      
+      {/* Top Navigation */}
+      <header className="flex items-center justify-between z-20">
+        {/* Logo */}
+        <div className="flex items-center gap-3">
+          <span className="w-3 h-3 rounded-full bg-[#D4AF37] shadow-[0_0_12px_#D4AF37]" />
+          <span className="font-bold text-lg tracking-wider text-neutral-900 dark:text-white uppercase">
+            MultiModal<span className="text-[#D4AF37]">.RAG</span>
+          </span>
+        </div>
+
+        {/* Nav Links */}
+        <nav className="hidden md:flex items-center gap-8 text-xs font-semibold tracking-widest text-neutral-500 dark:text-neutral-400 uppercase">
+          <a href="#features" className="hover:text-[#D4AF37] transition-colors">Features</a>
+          <a href="#architecture" className="hover:text-[#D4AF37] transition-colors">Architecture</a>
+          <a href="#docs" className="hover:text-[#D4AF37] transition-colors">Docs</a>
+          <a href="#pipeline" className="hover:text-[#D4AF37] transition-colors">Pipeline</a>
+          <a href="#demo" className="hover:text-[#D4AF37] transition-colors">Demo</a>
+        </nav>
+
+        {/* Theme Toggle */}
+        <div className="flex items-center gap-4">
+          <ThemeToggle />
+        </div>
+      </header>
+
+      {/* Hero Section */}
+      <main className="flex-1 flex flex-col md:flex-row items-center justify-between gap-12 my-12 z-10">
+        {/* Left Text Block */}
+        <div className="max-w-xl space-y-8">
+          <div className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-widest text-neutral-400 dark:text-neutral-500">
+            <span className="w-8 h-[1px] bg-[#D4AF37]" />
+            Next-Gen Document Intelligence
+          </div>
+
+          <h1 className="text-4xl sm:text-6xl font-extrabold tracking-tight text-neutral-900 dark:text-white leading-[1.15]">
+            Multi-Modal <span className="text-[#D4AF37] underline decoration-[#D4AF37]/40 underline-offset-8">RAG</span>
+          </h1>
+
+          <p className="text-sm sm:text-base text-neutral-600 dark:text-neutral-400 leading-relaxed max-w-md">
+            Seamlessly query complex unstructured PDFs. Deep reasoning across text, embedded HTML tables, and multi-modal vector embeddings.
           </p>
-        </header>
 
-        {/* Ingestion Section */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-6 shadow-sm space-y-4">
-          <h2 className="text-lg font-semibold">1. Document Ingestion</h2>
-          <form onSubmit={handleUpload} className="flex flex-col sm:flex-row gap-3">
-            <input
-              type="file"
-              accept=".pdf"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-              className="flex-1 text-sm file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-slate-800 dark:file:text-slate-200"
-            />
-            <button
-              type="submit"
-              disabled={!file || isUploading}
-              className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium disabled:opacity-50 transition-colors"
+          {/* Action Button -> Navigates to /chat */}
+          <div>
+            <Link
+              href="/chat"
+              className="inline-flex items-center gap-3 px-8 py-3.5 rounded-full border border-[#D4AF37]/60 text-xs font-semibold tracking-widest uppercase text-neutral-900 dark:text-white hover:bg-gold-gradient hover:text-black dark:hover:text-black transition-all duration-300 group shadow-[0_0_20px_rgba(212,175,55,0.2)]"
             >
-              {isUploading ? "Ingesting..." : "Process PDF"}
-            </button>
-          </form>
-          {uploadMessage && (
-            <p className="text-xs font-mono text-slate-600 dark:text-slate-400">
-              {uploadMessage}
-            </p>
-          )}
-        </section>
+              <span>Launch RAG Explorer</span>
+              <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
+            </Link>
+          </div>
+        </div>
 
-        {/* Search Section */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-6 shadow-sm space-y-4">
-          <h2 className="text-lg font-semibold">2. Query System</h2>
-          <form onSubmit={handleSearch} className="flex gap-3">
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g., How many attention heads does the Transformer use?"
-              className="flex-1 border border-slate-300 dark:border-slate-700 rounded-md px-4 py-2 text-sm bg-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <button
-              type="submit"
-              disabled={isSearching}
-              className="px-5 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md text-sm font-medium disabled:opacity-50 transition-colors"
-            >
-              {isSearching ? "Thinking..." : "Ask"}
-            </button>
-          </form>
-        </section>
+        {/* Right 3D Visual Element */}
+        <div className="w-full md:w-auto flex justify-center">
+          <Abstract3DNode />
+        </div>
+      </main>
 
-        {/* Answer Output */}
-        {answer && (
-          <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-6 shadow-sm space-y-3">
-            <h3 className="text-md font-semibold text-blue-600 dark:text-blue-400">Generated Answer</h3>
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">{answer}</p>
-          </section>
-        )}
+      {/* Footer / Socials */}
+      <footer className="flex items-end justify-between z-20 text-xs text-neutral-400">
+        <div className="hidden sm:block font-mono tracking-widest text-[10px] uppercase rotate-[-90deg] origin-left translate-y-[-20px]">
+          • Scroll Down
+        </div>
 
-        {/* Retained Sources Output */}
-        {sources.length > 0 && (
-          <section className="space-y-4">
-            <h3 className="text-md font-semibold text-slate-700 dark:text-slate-300">
-              Retrieved Sources ({sources.length})
-            </h3>
-            <div className="grid gap-4">
-              {sources.map((chunk) => (
-                <SourceCitationCard key={chunk.chunk_id} chunk={chunk} />
-              ))}
-            </div>
-          </section>
-        )}
+        <div className="flex items-center gap-6 text-neutral-500 dark:text-neutral-400 ml-auto">
+          <a href="#" className="hover:text-[#D4AF37] transition-colors"><Code size={16} /></a>
+          <a href="#" className="hover:text-[#D4AF37] transition-colors"><MessageSquare size={16} /></a>
+          <a href="#" className="hover:text-[#D4AF37] transition-colors"><Globe size={16} /></a>
+        </div>
+      </footer>
 
-      </div>
-    </main>
+    </div>
   );
 }
