@@ -20,3 +20,40 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+UPLOAD_DIR = "docs"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+class QueryRequest(BaseModel):
+    query: str
+    top_k: int = 3
+
+
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "Multi-Modal RAG API is running"}
+
+
+@app.post("/api/ingest")
+async def ingest_document(file: UploadFile = File(...)):
+    """Upload PDF document and process vector ingestion pipeline"""
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    
+    # Save uploaded file to disk
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    try:
+        process_and_store_documents(file_path)
+        return {
+            "status": "success",
+            "message": f"Successfully ingested {file.filename}",
+            "filename": file.filename
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
