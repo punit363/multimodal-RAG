@@ -1,11 +1,12 @@
+// app/chat/page.tsx
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { IngestionStepper } from "@/components/IngestionStepper";
 import { SourceCitationCard } from "@/components/SourceCitationCard";
-import { RetrievedChunk, QueryResponse } from "@/types/rag";
+import { RetrievedChunk } from "@/types/rag";
 import {
   Plus,
   Folder,
@@ -15,10 +16,25 @@ import {
   Send,
   Database,
   ArrowLeft,
+  User,
+  Bot,
 } from "lucide-react";
 import { CitationLightbox, LightboxData } from "@/components/CitationLightbox";
 
 const API_BASE_URL = "http://localhost:8000";
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: RetrievedChunk[];
+}
+
+interface Conversation {
+  id: number;
+  title: string;
+  messages: ChatMessage[];
+}
 
 export default function ChatWorkspace() {
   // Navigation & File Ingestion States
@@ -27,20 +43,29 @@ export default function ChatWorkspace() {
   const [ingestError, setIngestError] = useState<string>("");
   const [uploadedSources, setUploadedSources] = useState<string[]>([]);
 
-  // Conversation States
-  const [conversations, setConversations] = useState<
-    Array<{ id: number; title: string }>
-  >([]);
-  const [activeChat, setActiveChat] = useState<boolean>(false);
+  // Conversation & Chat History States
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<
+    number | null
+  >(null);
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
-  const [answer, setAnswer] = useState("");
-  const [sources, setSources] = useState<RetrievedChunk[]>([]);
 
   // Lightbox State
   const [activeLightbox, setActiveLightbox] = useState<LightboxData | null>(
     null
   );
+
+  // Auto-scroll ref
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const activeConversation = conversations.find(
+    (c) => c.id === activeConversationId
+  );
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [activeConversation?.messages]);
 
   // Handle PDF Upload with SSE Progress Stepper
   const handleIngestStream = async (selectedFile: File) => {
@@ -89,54 +114,171 @@ export default function ChatWorkspace() {
     }
   };
 
-  // Handle Search Query
+  // Start new conversation
+  const startNewConversation = () => {
+    const newId = conversations.length + 1;
+    const newConv: Conversation = {
+      id: newId,
+      title: `Conversation ${newId}`,
+      messages: [],
+    };
+    setConversations((prev) => [...prev, newConv]);
+    setActiveConversationId(newId);
+    setQuery("");
+  };
+
+  // Handle Search Query with streaming history
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim()) return;
+    if (!query.trim() || isSearching) return;
 
+    let convId = activeConversationId;
+    if (!convId) {
+      const newId = conversations.length + 1;
+      const newConv: Conversation = {
+        id: newId,
+        title: query.length > 20 ? `${query.slice(0, 20)}...` : query,
+        messages: [],
+      };
+      setConversations((prev) => [...prev, newConv]);
+      setActiveConversationId(newId);
+      convId = newId;
+    }
+
+    const currentQuery = query;
+    setQuery(""); // Clear input box immediately
     setIsSearching(true);
-    setAnswer("");
-    setSources([]);
+
+    const userMessageId = `user-${Date.now()}`;
+    const assistantMessageId = `assistant-${Date.now()}`;
+
+    // Append User Message and empty Assistant Message shell
+    setConversations((prev) =>
+      prev.map((c) => {
+        if (c.id === convId) {
+          return {
+            ...c,
+            title:
+              c.messages.length === 0
+                ? currentQuery.length > 22
+                  ? `${currentQuery.slice(0, 22)}...`
+                  : currentQuery
+                : c.title,
+            messages: [
+              ...c.messages,
+              { id: userMessageId, role: "user", content: currentQuery },
+              {
+                id: assistantMessageId,
+                role: "assistant",
+                content: "",
+                sources: [],
+              },
+            ],
+          };
+        }
+        return c;
+      })
+    );
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/chat`, {
+      const response = await fetch(`${API_BASE_URL}/api/chat-stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, top_k: 3 }),
+        body: JSON.stringify({ query: currentQuery, top_k: 3 }),
       });
 
-      if (!res.ok) throw new Error("Query execution failed");
+      if (!response.ok || !response.body) {
+        throw new Error("Failed to start stream");
+      }
 
-      const data: QueryResponse = await res.json();
-      setAnswer(data.answer);
-      setSources(data.sources);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.replace("data: ", ""));
+
+              if (data.type === "sources") {
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id === convId) {
+                      return {
+                        ...c,
+                        messages: c.messages.map((m) =>
+                          m.id === assistantMessageId
+                            ? { ...m, sources: data.sources }
+                            : m
+                        ),
+                      };
+                    }
+                    return c;
+                  })
+                );
+              } else if (data.type === "token") {
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id === convId) {
+                      return {
+                        ...c,
+                        messages: c.messages.map((m) =>
+                          m.id === assistantMessageId
+                            ? { ...m, content: m.content + data.token }
+                            : m
+                        ),
+                      };
+                    }
+                    return c;
+                  })
+                );
+              }
+            } catch (err) {
+              console.error("Error parsing SSE line:", err);
+            }
+          }
+        }
+      }
     } catch (err: any) {
-      setAnswer(`Error: ${err.message || "Something went wrong"}`);
+      setConversations((prev) =>
+        prev.map((c) => {
+          if (c.id === convId) {
+            return {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === assistantMessageId
+                  ? {
+                      ...m,
+                      content: `Error: ${err.message || "Streaming failed"}`,
+                    }
+                  : m
+              ),
+            };
+          }
+          return c;
+        })
+      );
     } finally {
       setIsSearching(false);
     }
   };
 
-  const startNewConversation = () => {
-    const newId = conversations.length + 1;
-    setConversations((prev) => [
-      ...prev,
-      { id: newId, title: `Conversation ${newId}` },
-    ]);
-    setActiveChat(true);
-    setAnswer("");
-    setSources([]);
-    setQuery("");
-  };
-
   return (
-    <div className="flex h-screen w-full bg-[#0D0D0D] text-neutral-100 overflow-hidden font-sans">
+    <div className="flex h-screen w-full bg-neutral-100 dark:bg-[#0D0D0D] text-neutral-900 dark:text-neutral-100 overflow-hidden font-sans transition-colors duration-300">
       {/* LEFT SIDEBAR: Navigation & Projects */}
-      <aside className="w-64 border-r border-neutral-800 bg-[#111111] flex flex-col p-4 gap-4 select-none">
+      <aside className="w-64 border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#111111] flex flex-col p-4 gap-4 select-none">
         <div className="flex items-center justify-between">
           <Link
             href="/"
-            className="flex items-center gap-2 font-bold text-sm tracking-wide text-neutral-200 hover:text-[#D4AF37]"
+            className="flex items-center gap-2 font-bold text-sm tracking-wide text-neutral-800 dark:text-neutral-200 hover:text-[#D4AF37]"
           >
             <ArrowLeft size={16} /> MultiModal.RAG
           </Link>
@@ -145,13 +287,13 @@ export default function ChatWorkspace() {
 
         <button
           onClick={startNewConversation}
-          className="flex items-center justify-center gap-2 w-full py-2 px-3 rounded-lg border border-neutral-700 bg-neutral-900 hover:bg-neutral-800 text-xs font-semibold text-neutral-200 transition-all cursor-pointer"
+          className="flex items-center justify-center gap-2 w-full py-2 px-3 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer"
         >
           <Plus size={14} /> New project
         </button>
 
-        <div className="space-y-1 text-xs text-neutral-400">
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-neutral-900/50 text-neutral-200 font-medium">
+        <div className="space-y-1 text-xs text-neutral-500 dark:text-neutral-400">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-neutral-100 dark:bg-neutral-900/50 text-neutral-800 dark:text-neutral-200 font-medium">
             <Folder size={14} className="text-[#D4AF37]" />
             <span>Projects</span>
           </div>
@@ -162,8 +304,12 @@ export default function ChatWorkspace() {
           {conversations.map((c) => (
             <div
               key={c.id}
-              onClick={() => setActiveChat(true)}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200 cursor-pointer"
+              onClick={() => setActiveConversationId(c.id)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors ${
+                activeConversationId === c.id
+                  ? "bg-amber-500/10 text-[#D4AF37] font-semibold"
+                  : "text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-900 hover:text-neutral-900 dark:hover:text-neutral-200"
+              }`}
             >
               <MessageSquare size={13} />
               <span className="truncate">{c.title}</span>
@@ -173,11 +319,11 @@ export default function ChatWorkspace() {
       </aside>
 
       {/* CENTER WORKSPACE: Main Chat Area */}
-      <main className="flex-1 flex flex-col bg-[#0A0A0A] relative overflow-hidden">
+      <main className="flex-1 flex flex-col bg-white dark:bg-[#0A0A0A] relative overflow-hidden">
         {/* Workspace Header */}
-        <header className="h-14 border-b border-neutral-800 flex items-center justify-between px-6 bg-[#0D0D0D]">
+        <header className="h-14 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between px-6 bg-neutral-50 dark:bg-[#0D0D0D]">
           <div>
-            <h1 className="text-sm font-semibold text-neutral-200">
+            <h1 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
               GenAI Team Workspace
             </h1>
             <p className="text-[11px] text-neutral-500">
@@ -186,7 +332,7 @@ export default function ChatWorkspace() {
           </div>
           <button
             onClick={startNewConversation}
-            className="flex items-center gap-1.5 py-1.5 px-3 rounded-md bg-neutral-100 text-black dark:bg-neutral-100 dark:text-black hover:bg-[#D4AF37] text-xs font-semibold transition-all cursor-pointer"
+            className="flex items-center gap-1.5 py-1.5 px-3 rounded-md bg-neutral-900 text-white dark:bg-neutral-100 dark:text-black hover:bg-[#D4AF37] dark:hover:bg-[#D4AF37] text-xs font-semibold transition-all cursor-pointer"
           >
             <Plus size={14} /> New conversation
           </button>
@@ -194,14 +340,14 @@ export default function ChatWorkspace() {
 
         {/* Workspace Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {!activeChat ? (
-            /* Empty State (Matching Reference) */
+          {!activeConversation || activeConversation.messages.length === 0 ? (
+            /* Empty State */
             <div className="h-full flex flex-col items-center justify-center text-center space-y-4 max-w-md mx-auto">
-              <div className="w-12 h-12 rounded-xl border border-neutral-800 bg-neutral-900 flex items-center justify-center text-neutral-500">
+              <div className="w-12 h-12 rounded-xl border border-neutral-300 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900 flex items-center justify-center text-neutral-500">
                 <MessageSquare size={20} />
               </div>
               <div className="space-y-1">
-                <h3 className="text-sm font-semibold text-neutral-200">
+                <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
                   No conversations yet
                 </h3>
                 <p className="text-xs text-neutral-500 leading-relaxed">
@@ -211,88 +357,113 @@ export default function ChatWorkspace() {
               </div>
               <button
                 onClick={startNewConversation}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-100 text-black text-xs font-semibold hover:bg-[#D4AF37] transition-all cursor-pointer shadow-lg"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-900 text-white dark:bg-neutral-100 dark:text-black text-xs font-semibold hover:bg-[#D4AF37] dark:hover:bg-[#D4AF37] transition-all cursor-pointer shadow-lg"
               >
                 <Plus size={14} /> Start first conversation
               </button>
             </div>
           ) : (
-            /* Active Chat Session */
+            /* Active Chat Stream History */
             <div className="max-w-3xl mx-auto space-y-6">
-              {answer && (
-                <div className="border border-neutral-800 rounded-xl p-5 bg-neutral-900/40 space-y-3">
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-[#D4AF37]">
-                    Generated Answer
-                  </span>
-                  <p className="text-sm text-neutral-200 leading-relaxed whitespace-pre-wrap">
-                    {answer}
-                  </p>
-                </div>
-              )}
+              {activeConversation.messages.map((msg) => (
+                <div key={msg.id} className="space-y-4">
+                  {msg.role === "user" ? (
+                    <div className="flex items-start gap-3 justify-end">
+                      <div className="bg-amber-500/10 border border-[#D4AF37]/30 text-neutral-900 dark:text-neutral-100 px-4 py-3 rounded-2xl max-w-xl text-xs leading-relaxed">
+                        {msg.content}
+                      </div>
+                      <div className="w-7 h-7 rounded-full bg-[#D4AF37] text-black flex items-center justify-center font-bold text-xs shrink-0">
+                        <User size={14} />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-3">
+                      <div className="w-7 h-7 rounded-full bg-neutral-800 dark:bg-neutral-800 text-[#D4AF37] flex items-center justify-center font-bold text-xs shrink-0 border border-[#D4AF37]/40">
+                        <Bot size={14} />
+                      </div>
+                      <div className="space-y-4 flex-1">
+                        {msg.content ? (
+                          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-4 bg-neutral-50 dark:bg-neutral-900/40 text-xs text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">
+                            <span className="text-[10px] font-mono uppercase tracking-widest text-[#D4AF37] block mb-2">
+                              Generated Answer
+                            </span>
+                            {msg.content}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-neutral-500 animate-pulse italic">
+                            Thinking & generating answer...
+                          </div>
+                        )}
 
-              {sources.length > 0 && (
-                <div className="space-y-3">
-                  <span className="text-xs font-mono uppercase tracking-wider text-neutral-500">
-                    Retrieved Sources ({sources.length})
-                  </span>
-                  <div className="grid gap-3">
-                    {sources.map((chunk) => (
-                      <SourceCitationCard
-                        key={chunk.chunk_id}
-                        chunk={chunk}
-                        onOpenLightbox={(data) => setActiveLightbox(data)}
-                      />
-                    ))}
-                  </div>
+                        {msg.sources && msg.sources.length > 0 && (
+                          <div className="space-y-2">
+                            <span className="text-xs font-mono uppercase tracking-wider text-neutral-500">
+                              Retrieved Sources ({msg.sources.length})
+                            </span>
+                            <div className="grid gap-3">
+                              {msg.sources.map((chunk) => (
+                                <SourceCitationCard
+                                  key={chunk.chunk_id}
+                                  chunk={chunk}
+                                  onOpenLightbox={(data) =>
+                                    setActiveLightbox(data)
+                                  }
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
+              ))}
+              <div ref={messagesEndRef} />
             </div>
           )}
         </div>
 
         {/* Input Query Bar */}
-        {activeChat && (
-          <div className="p-4 border-t border-neutral-800 bg-[#0D0D0D]">
-            <form
-              onSubmit={handleSearch}
-              className="max-w-3xl mx-auto flex gap-2"
+        <div className="p-4 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-[#0D0D0D]">
+          <form
+            onSubmit={handleSearch}
+            className="max-w-3xl mx-auto flex gap-2"
+          >
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Ask a question about your indexed documents..."
+              className="flex-1 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg px-4 py-2.5 text-xs text-neutral-900 dark:text-neutral-200 focus:outline-none focus:border-[#D4AF37]"
+            />
+            <button
+              type="submit"
+              disabled={isSearching || !query.trim()}
+              className="px-4 py-2.5 bg-[#D4AF37] text-black font-semibold rounded-lg text-xs hover:bg-[#E5C158] disabled:opacity-50 transition-all flex items-center gap-1.5 cursor-pointer"
             >
-              <input
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Ask a question about your indexed documents..."
-                className="flex-1 bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-2.5 text-xs text-neutral-200 focus:outline-none focus:border-[#D4AF37]"
-              />
-              <button
-                type="submit"
-                disabled={isSearching}
-                className="px-4 py-2.5 bg-[#D4AF37] text-black font-semibold rounded-lg text-xs hover:bg-[#E5C158] disabled:opacity-50 transition-all flex items-center gap-1.5"
-              >
-                {isSearching ? "Thinking..." : <Send size={14} />}
-              </button>
-            </form>
-          </div>
-        )}
+              {isSearching ? "Thinking..." : <Send size={14} />}
+            </button>
+          </form>
+        </div>
       </main>
 
       {/* RIGHT SIDEBAR: Knowledge Base & Stepper */}
-      <aside className="w-80 border-l border-neutral-800 bg-[#111111] flex flex-col p-4 gap-4 select-none">
-        <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
+      <aside className="w-80 border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#111111] flex flex-col p-4 gap-4 select-none">
+        <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 pb-3">
           <Database size={16} className="text-[#D4AF37]" />
-          <h2 className="text-xs font-semibold tracking-wide text-neutral-200 uppercase">
+          <h2 className="text-xs font-semibold tracking-wide text-neutral-800 dark:text-neutral-200 uppercase">
             Knowledge Base
           </h2>
         </div>
 
         {/* File Drag and Drop / Upload Area */}
         <div className="space-y-2">
-          <span className="text-xs font-medium text-neutral-400">
+          <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
             Add Sources
           </span>
-          <label className="border-2 border-dashed border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-950/40 cursor-pointer transition-all">
+          <label className="border-2 border-dashed border-neutral-300 dark:border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-50 dark:bg-neutral-950/40 cursor-pointer transition-all">
             <UploadCloud size={20} className="text-neutral-500" />
-            <span className="text-xs font-medium text-neutral-300">
+            <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">
               Drop files or click to upload
             </span>
             <span className="text-[10px] text-neutral-500">
@@ -316,19 +487,19 @@ export default function ChatWorkspace() {
         )}
 
         {/* Uploaded Sources List */}
-        <div className="flex-1 overflow-y-auto space-y-2 pt-2 border-t border-neutral-800">
-          <span className="text-xs font-medium text-neutral-400">
+        <div className="flex-1 overflow-y-auto space-y-2 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+          <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
             Sources ({uploadedSources.length})
           </span>
           {uploadedSources.length === 0 ? (
-            <p className="text-xs text-neutral-600 italic">
+            <p className="text-xs text-neutral-500 dark:text-neutral-600 italic">
               No sources added yet
             </p>
           ) : (
             uploadedSources.map((s, idx) => (
               <div
                 key={idx}
-                className="flex items-center gap-2 p-2 rounded-lg bg-neutral-900 border border-neutral-800 text-xs text-neutral-300"
+                className="flex items-center gap-2 p-2 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-800 dark:text-neutral-300"
               >
                 <FileText size={14} className="text-[#D4AF37]" />
                 <span className="truncate">{s}</span>
@@ -337,6 +508,7 @@ export default function ChatWorkspace() {
           )}
         </div>
       </aside>
+
       <CitationLightbox
         data={activeLightbox}
         onClose={() => setActiveLightbox(null)}
