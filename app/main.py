@@ -8,7 +8,8 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-
+from fastapi.responses import StreamingResponse
+from app.rag_pipeline import answer_query_stream
 from app.rag_pipeline import (
     partition_documents,
     create_chunks_by_title,
@@ -83,3 +84,14 @@ def chat_query(request: QueryRequest):
         return answer_query(request.query, k=request.top_k)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution failed: {str(e)}")
+    
+@app.post("/api/chat-stream")
+def chat_query_stream(request: QueryRequest):
+    """Query ChromaDB and stream LLM response tokens via Server-Sent Events (SSE)"""
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query string cannot be empty.")
+
+    return StreamingResponse(
+        answer_query_stream(request.query, k=request.top_k),
+        media_type="text/event-stream"
+    )

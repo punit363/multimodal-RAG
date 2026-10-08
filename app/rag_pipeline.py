@@ -176,3 +176,59 @@ def answer_query(query: str, k: int = 3) -> Dict[str, Any]:
         "answer": response.content,
         "sources": formatted_sources
     }
+
+
+def answer_query_stream(query: str, k: int = 3):
+    """Generator function that yields SSE data packets for sources and token chunks"""
+    embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
+    db = Chroma(
+        persist_directory=PERSIST_DIR,
+        embedding_function=embedding_model
+    )
+    
+    retriever = db.as_retriever(search_kwargs={"k": k})
+    chunks = retriever.invoke(query)
+
+    prompt_text = f"Based on the following documents, please answer this question: {query}\n\nCONTENT TO ANALYZE:\n"
+    formatted_sources = []
+    message_content = []
+
+    for i, chunk in enumerate(chunks):
+        raw_content = chunk.metadata.get("original_content") or chunk.metadata.get("orignal_content")
+        original_data = json.loads(raw_content) if isinstance(raw_content, str) else (raw_content or {})
+        
+        prompt_text += f"--- Document {i+1} ---\n"
+        if original_data.get("raw_text"):
+            prompt_text += f"TEXT:\n{original_data['raw_text']}\n\n"
+        if original_data.get("tables_html"):
+            for j, table in enumerate(original_data["tables_html"]):
+                prompt_text += f"Table {j+1}:\n{table}\n\n"
+
+        for img_b64 in original_data.get("images_base64", []):
+            message_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+            })
+
+        formatted_sources.append({
+            "chunk_id": i + 1,
+            "enhanced_content": chunk.page_content,
+            "metadata": {"original_content": original_data}
+        })
+
+    prompt_text += "\nANSWER:"
+    message_content.insert(0, {"type": "text", "text": prompt_text})
+
+    # 1. Yield retrieved sources first
+    yield f"data: {json.dumps({'type': 'sources', 'sources': formatted_sources})}\n\n"
+
+    # 2. Initialize streaming LLM model
+    llm = ChatOpenAI(model="gpt-4o", temperature=0, streaming=True)
+
+    # 3. Stream tokens in real-time
+    for chunk in llm.stream([HumanMessage(content=message_content)]):
+        if chunk.content:
+            yield f"data: {json.dumps({'type': 'token', 'token': chunk.content})}\n\n"
+
+    # 4. Signal completion
+    yield f"data: {json.dumps({'type': 'done'})}\n\n"
