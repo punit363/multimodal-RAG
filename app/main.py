@@ -1,18 +1,25 @@
+# app/main.py
+
 import os
 import shutil
+import json
+import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.rag_pipeline import process_and_store_documents, answer_query
-
-app = FastAPI(
-    title="Multi-Modal RAG API",
-    description="Backend API for document ingestion and multi-modal query handling",
-    version="1.0.0"
+from app.rag_pipeline import (
+    partition_documents,
+    create_chunks_by_title,
+    separate_content_types,
+    create_ai_enhanced_summary,
+    process_and_store_documents,
+    answer_query
 )
 
-# Enable CORS for Next.js frontend running locally (port 3000)
+app = FastAPI(title="Multi-Modal RAG API")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -21,52 +28,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 UPLOAD_DIR = "docs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 3
 
-
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "Multi-Modal RAG API is running"}
 
-
-@app.post("/api/ingest")
-async def ingest_document(file: UploadFile = File(...)):
-    """Upload PDF document and process vector ingestion pipeline"""
+@app.post("/api/ingest-stream")
+async def ingest_document_stream(file: UploadFile = File(...)):
+    """Upload PDF document and stream step-by-step progress events"""
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
     file_path = os.path.join(UPLOAD_DIR, file.filename)
-    
-    # Save uploaded file to disk
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    try:
-        process_and_store_documents(file_path)
-        return {
-            "status": "success",
-            "message": f"Successfully ingested {file.filename}",
-            "filename": file.filename
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+    async def event_generator():
+        try:
+            # Step 1: Document Partitioning
+            yield f"data: {json.dumps({'step': 1, 'label': 'Partitioning PDF Layout...', 'status': 'in_progress'})}\n\n"
+            await asyncio.sleep(0.5)
+            elements = partition_documents(file_path)
 
+            # Step 2: Content Categorization & Vision Extraction
+            yield f"data: {json.dumps({'step': 2, 'label': 'Extracting Text, Tables & Images...', 'status': 'in_progress'})}\n\n"
+            await asyncio.sleep(0.5)
+            chunks = create_chunks_by_title(elements)
+
+            # Step 3: AI Vision Summaries
+            yield f"data: {json.dumps({'step': 3, 'label': 'Generating Multi-Modal AI Summaries...', 'status': 'in_progress'})}\n\n"
+            await asyncio.sleep(0.5)
+            
+            # Step 4: Vector Store Persistence
+            yield f"data: {json.dumps({'step': 4, 'label': 'Generating Embeddings & Storing in ChromaDB...', 'status': 'in_progress'})}\n\n"
+            process_and_store_documents(file_path)
+
+            yield f"data: {json.dumps({'step': 5, 'label': 'Document Indexing Complete!', 'status': 'completed', 'filename': file.filename})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'step': -1, 'label': f'Error: {str(e)}', 'status': 'error'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.post("/api/chat")
 def chat_query(request: QueryRequest):
-    """Query vector database and generate response with source citations"""
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query string cannot be empty.")
-
     try:
-        result = answer_query(request.query, k=request.top_k)
-        return result
+        return answer_query(request.query, k=request.top_k)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution failed: {str(e)}")
