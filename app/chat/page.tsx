@@ -14,8 +14,9 @@ import {
   FileText,
   Send,
   Database,
-  ArrowLeft
+  ArrowLeft,
 } from "lucide-react";
+import { CitationLightbox, LightboxData } from "@/components/CitationLightbox";
 
 const API_BASE_URL = "http://localhost:8000";
 
@@ -27,12 +28,19 @@ export default function ChatWorkspace() {
   const [uploadedSources, setUploadedSources] = useState<string[]>([]);
 
   // Conversation States
-  const [conversations, setConversations] = useState<Array<{ id: number; title: string }>>([]);
+  const [conversations, setConversations] = useState<
+    Array<{ id: number; title: string }>
+  >([]);
   const [activeChat, setActiveChat] = useState<boolean>(false);
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [answer, setAnswer] = useState("");
   const [sources, setSources] = useState<RetrievedChunk[]>([]);
+
+  // Lightbox State
+  const [activeLightbox, setActiveLightbox] = useState<LightboxData | null>(
+    null
+  );
 
   // Handle PDF Upload with SSE Progress Stepper
   const handleIngestStream = async (selectedFile: File) => {
@@ -49,7 +57,8 @@ export default function ChatWorkspace() {
         body: formData,
       });
 
-      if (!response.body) throw new Error("No response body from ingestion stream");
+      if (!response.body)
+        throw new Error("No response body from ingestion stream");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -110,7 +119,10 @@ export default function ChatWorkspace() {
 
   const startNewConversation = () => {
     const newId = conversations.length + 1;
-    setConversations((prev) => [...prev, { id: newId, title: `Conversation ${newId}` }]);
+    setConversations((prev) => [
+      ...prev,
+      { id: newId, title: `Conversation ${newId}` },
+    ]);
     setActiveChat(true);
     setAnswer("");
     setSources([]);
@@ -119,11 +131,13 @@ export default function ChatWorkspace() {
 
   return (
     <div className="flex h-screen w-full bg-[#0D0D0D] text-neutral-100 overflow-hidden font-sans">
-      
       {/* LEFT SIDEBAR: Navigation & Projects */}
       <aside className="w-64 border-r border-neutral-800 bg-[#111111] flex flex-col p-4 gap-4 select-none">
         <div className="flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2 font-bold text-sm tracking-wide text-neutral-200 hover:text-[#D4AF37]">
+          <Link
+            href="/"
+            className="flex items-center gap-2 font-bold text-sm tracking-wide text-neutral-200 hover:text-[#D4AF37]"
+          >
             <ArrowLeft size={16} /> MultiModal.RAG
           </Link>
           <ThemeToggle />
@@ -163,8 +177,12 @@ export default function ChatWorkspace() {
         {/* Workspace Header */}
         <header className="h-14 border-b border-neutral-800 flex items-center justify-between px-6 bg-[#0D0D0D]">
           <div>
-            <h1 className="text-sm font-semibold text-neutral-200">GenAI Team Workspace</h1>
-            <p className="text-[11px] text-neutral-500">Multi-modal knowledge reasoning</p>
+            <h1 className="text-sm font-semibold text-neutral-200">
+              GenAI Team Workspace
+            </h1>
+            <p className="text-[11px] text-neutral-500">
+              Multi-modal knowledge reasoning
+            </p>
           </div>
           <button
             onClick={startNewConversation}
@@ -183,9 +201,12 @@ export default function ChatWorkspace() {
                 <MessageSquare size={20} />
               </div>
               <div className="space-y-1">
-                <h3 className="text-sm font-semibold text-neutral-200">No conversations yet</h3>
+                <h3 className="text-sm font-semibold text-neutral-200">
+                  No conversations yet
+                </h3>
                 <p className="text-xs text-neutral-500 leading-relaxed">
-                  Start your first conversation in this project to analyze documents and get multi-modal insights.
+                  Start your first conversation in this project to analyze
+                  documents and get multi-modal insights.
                 </p>
               </div>
               <button
@@ -203,7 +224,9 @@ export default function ChatWorkspace() {
                   <span className="text-[10px] font-mono uppercase tracking-widest text-[#D4AF37]">
                     Generated Answer
                   </span>
-                  <p className="text-sm text-neutral-200 leading-relaxed whitespace-pre-wrap">{answer}</p>
+                  <p className="text-sm text-neutral-200 leading-relaxed whitespace-pre-wrap">
+                    {answer}
+                  </p>
                 </div>
               )}
 
@@ -214,7 +237,11 @@ export default function ChatWorkspace() {
                   </span>
                   <div className="grid gap-3">
                     {sources.map((chunk) => (
-                      <SourceCitationCard key={chunk.chunk_id} chunk={chunk} />
+                      <SourceCitationCard
+                        key={chunk.chunk_id}
+                        chunk={chunk}
+                        onOpenLightbox={(data) => setActiveLightbox(data)}
+                      />
                     ))}
                   </div>
                 </div>
@@ -226,7 +253,10 @@ export default function ChatWorkspace() {
         {/* Input Query Bar */}
         {activeChat && (
           <div className="p-4 border-t border-neutral-800 bg-[#0D0D0D]">
-            <form onSubmit={handleSearch} className="max-w-3xl mx-auto flex gap-2">
+            <form
+              onSubmit={handleSearch}
+              className="max-w-3xl mx-auto flex gap-2"
+            >
               <input
                 type="text"
                 value={query}
@@ -250,16 +280,24 @@ export default function ChatWorkspace() {
       <aside className="w-80 border-l border-neutral-800 bg-[#111111] flex flex-col p-4 gap-4 select-none">
         <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
           <Database size={16} className="text-[#D4AF37]" />
-          <h2 className="text-xs font-semibold tracking-wide text-neutral-200 uppercase">Knowledge Base</h2>
+          <h2 className="text-xs font-semibold tracking-wide text-neutral-200 uppercase">
+            Knowledge Base
+          </h2>
         </div>
 
         {/* File Drag and Drop / Upload Area */}
         <div className="space-y-2">
-          <span className="text-xs font-medium text-neutral-400">Add Sources</span>
+          <span className="text-xs font-medium text-neutral-400">
+            Add Sources
+          </span>
           <label className="border-2 border-dashed border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-950/40 cursor-pointer transition-all">
             <UploadCloud size={20} className="text-neutral-500" />
-            <span className="text-xs font-medium text-neutral-300">Drop files or click to upload</span>
-            <span className="text-[10px] text-neutral-500">PDF documents supported</span>
+            <span className="text-xs font-medium text-neutral-300">
+              Drop files or click to upload
+            </span>
+            <span className="text-[10px] text-neutral-500">
+              PDF documents supported
+            </span>
             <input
               type="file"
               accept=".pdf"
@@ -279,12 +317,19 @@ export default function ChatWorkspace() {
 
         {/* Uploaded Sources List */}
         <div className="flex-1 overflow-y-auto space-y-2 pt-2 border-t border-neutral-800">
-          <span className="text-xs font-medium text-neutral-400">Sources ({uploadedSources.length})</span>
+          <span className="text-xs font-medium text-neutral-400">
+            Sources ({uploadedSources.length})
+          </span>
           {uploadedSources.length === 0 ? (
-            <p className="text-xs text-neutral-600 italic">No sources added yet</p>
+            <p className="text-xs text-neutral-600 italic">
+              No sources added yet
+            </p>
           ) : (
             uploadedSources.map((s, idx) => (
-              <div key={idx} className="flex items-center gap-2 p-2 rounded-lg bg-neutral-900 border border-neutral-800 text-xs text-neutral-300">
+              <div
+                key={idx}
+                className="flex items-center gap-2 p-2 rounded-lg bg-neutral-900 border border-neutral-800 text-xs text-neutral-300"
+              >
                 <FileText size={14} className="text-[#D4AF37]" />
                 <span className="truncate">{s}</span>
               </div>
@@ -292,7 +337,10 @@ export default function ChatWorkspace() {
           )}
         </div>
       </aside>
-
+      <CitationLightbox
+        data={activeLightbox}
+        onClose={() => setActiveLightbox(null)}
+      />
     </div>
   );
 }
