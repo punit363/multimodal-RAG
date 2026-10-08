@@ -1,26 +1,30 @@
+/* app/globals.css */
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@variant dark (&:where(.dark, .dark *));
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer utilities {
+  /* Rich Metallic Gold Palette */
+  .text-gold {
+    color: #D4AF37;
   }
-}
+  .bg-gold {
+    background-color: #D4AF37;
+  }
+  .border-gold {
+    border-color: #D4AF37;
+  }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* Deep Metallic Gold Gradient for Buttons & Accent Node */
+  .bg-gold-gradient {
+    background: linear-gradient(135deg, #F3E5AB 0%, #D4AF37 50%, #AA7C11 100%);
+  }
+
+  /* Subtle Gold Glow Effects */
+  .shadow-gold-glow {
+    box-shadow: 0 0 25px rgba(212, 175, 55, 0.25);
+  }
+  .shadow-gold-node {
+    box-shadow: 0 0 50px rgba(212, 175, 55, 0.35);
+  }
 }
