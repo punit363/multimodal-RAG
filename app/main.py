@@ -57,3 +57,16 @@ async def ingest_document(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@app.post("/api/chat")
+def chat_query(request: QueryRequest):
+    """Query vector database and generate response with source citations"""
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query string cannot be empty.")
+
+    try:
+        result = answer_query(request.query, k=request.top_k)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query execution failed: {str(e)}")
