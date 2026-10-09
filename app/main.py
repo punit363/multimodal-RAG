@@ -95,3 +95,102 @@ def chat_query_stream(request: QueryRequest):
         answer_query_stream(request.query, k=request.top_k),
         media_type="text/event-stream"
     )
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+import os, shutil, json, asyncio, uuid
+
+from app.database import (
+    init_db,
+    create_conversation,
+    get_all_conversations,
+    save_message,
+    update_message_content,
+    update_conversation_title
+)
+from app.rag_pipeline import answer_query_stream, process_and_store_documents, partition_documents, create_chunks_by_title
+
+app = FastAPI(title="Multi-Modal RAG API")
+
+# Initialize SQLite database schema on startup
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class StreamQueryRequest(BaseModel):
+    query: str
+    conversation_id: str
+    user_message_id: str
+    assistant_message_id: str
+    top_k: int = 3
+
+class CreateConvRequest(BaseModel):
+    title: str = "New Conversation"
+
+@app.get("/api/conversations")
+def list_conversations():
+    """Fetch all persisted conversations and chat messages"""
+    return get_all_conversations()
+
+@app.post("/api/conversations")
+def new_conversation(req: CreateConvRequest):
+    """Create a new conversation record"""
+    conv_id = str(uuid.uuid4())
+    return create_conversation(conv_id, req.title)
+
+@app.post("/api/chat-stream")
+async def chat_query_stream(request: StreamQueryRequest):
+    """Stream LLM tokens and persist messages to SQLite upon generation"""
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query string cannot be empty.")
+
+    # 1. Save user query message to database
+    save_message(
+        msg_id=request.user_message_id,
+        conv_id=request.conversation_id,
+        role="user",
+        content=request.query
+    )
+
+    # 2. Save initial empty assistant message to database
+    save_message(
+        msg_id=request.assistant_message_id,
+        conv_id=request.conversation_id,
+        role="assistant",
+        content=""
+    )
+
+    async def event_generator():
+        accumulated_answer = ""
+        retrieved_sources = []
+
+        for sse_line in answer_query_stream(request.query, k=request.top_k):
+            yield sse_line
+            if sse_line.startswith("data: "):
+                try:
+                    data = json.loads(sse_line.replace("data: ", "").strip())
+                    if data.get("type") == "sources":
+                        retrieved_sources = data.get("sources", [])
+                    elif data.get("type") == "token":
+                        accumulated_answer += data.get("token", "")
+                except Exception:
+                    pass
+
+        # 3. Once stream finishes, update persisted assistant message in SQLite
+        update_message_content(
+            msg_id=request.assistant_message_id,
+            content=accumulated_answer,
+            sources=retrieved_sources
+        )
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
