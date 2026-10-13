@@ -18,6 +18,8 @@ import {
   ArrowLeft,
   User,
   Bot,
+  Trash2,
+  Loader2,
 } from "lucide-react";
 import { CitationLightbox, LightboxData } from "@/components/CitationLightbox";
 
@@ -36,11 +38,21 @@ interface Conversation {
   messages: ChatMessage[];
 }
 
+interface DocumentItem {
+  id: string;
+  filename: string;
+  created_at?: string;
+}
+
 export default function ChatWorkspace() {
-  const [file, setFile] = useState<File | null>(null);
   const [ingestStep, setIngestStep] = useState<number>(0);
   const [ingestError, setIngestError] = useState<string>("");
-  const [uploadedSources, setUploadedSources] = useState<string[]>([]);
+
+  // Knowledge base
+  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+  const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
+  const knownDocIdsRef = useRef<Set<string>>(new Set());
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -52,9 +64,12 @@ export default function ChatWorkspace() {
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
 
-  // Fetch persisted conversations from SQLite on initial page load
+  const noSourceSelected = documents.length > 0 && selectedDocIds.size === 0;
+
+  // Initial load: conversations + documents from the backend
   useEffect(() => {
     fetchConversations();
+    fetchDocuments();
   }, []);
 
   useEffect(() => {
@@ -76,9 +91,68 @@ export default function ChatWorkspace() {
     }
   };
 
+  // Load the document list. Newly seen documents are selected automatically;
+  // documents that no longer exist are dropped from the selection.
+  const fetchDocuments = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/documents`);
+      if (!res.ok) return;
+      const data: DocumentItem[] = await res.json();
+
+      const newIds = data
+        .filter((d) => !knownDocIdsRef.current.has(d.id))
+        .map((d) => d.id);
+      const currentIds = new Set(data.map((d) => d.id));
+      knownDocIdsRef.current = currentIds;
+
+      setDocuments(data);
+      setSelectedDocIds((prev) => {
+        const next = new Set<string>();
+        prev.forEach((id) => currentIds.has(id) && next.add(id));
+        newIds.forEach((id) => next.add(id));
+        return next;
+      });
+    } catch (err) {
+      console.error("Failed to load documents:", err);
+    }
+  };
+
+  const toggleDocument = (id: string) => {
+    setSelectedDocIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllDocuments = () => {
+    setSelectedDocIds((prev) =>
+      prev.size === documents.length ? new Set() : new Set(documents.map((d) => d.id))
+    );
+  };
+
+  const handleDeleteDocument = async (doc: DocumentItem) => {
+    if (!window.confirm(`Delete "${doc.filename}" and remove it from the knowledge base?`)) {
+      return;
+    }
+    setDeletingDocId(doc.id);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/documents/${doc.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      await fetchDocuments();
+    } catch (err) {
+      console.error("Failed to delete document:", err);
+      window.alert("Could not delete the document. Check the backend logs.");
+    } finally {
+      setDeletingDocId(null);
+    }
+  };
+
   // Document Upload Stream Handler
   const handleIngestStream = async (selectedFile: File) => {
-    setFile(selectedFile);
     setIngestStep(1);
     setIngestError("");
 
@@ -91,13 +165,18 @@ export default function ChatWorkspace() {
         body: formData,
       });
 
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        throw new Error(detail?.detail || `Upload failed (${response.status})`);
+      }
       if (!response.body) throw new Error("No response body from ingestion stream");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let failed = false;
 
-      while (true) {
+      while (!failed) {
         const { value, done } = await reader.read();
         if (done) break;
 
@@ -106,20 +185,21 @@ export default function ChatWorkspace() {
         buffer = lines.pop() || "";
 
         for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.replace("data: ", "").trim());
-              if (data.status === "error") {
-                setIngestError(data.label);
-                break;
-              }
-              setIngestStep(data.step);
-              if (data.status === "completed") {
-                setUploadedSources((prev) => [...prev, data.filename]);
-              }
-            } catch (err) {
-              console.error("Error parsing ingestion SSE line:", err);
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const data = JSON.parse(line.replace("data: ", "").trim());
+            if (data.status === "error") {
+              setIngestError(data.label);
+              failed = true;
+              break;
             }
+            setIngestStep(data.step);
+            if (data.status === "completed") {
+              // Pull the persisted list so the new doc shows up (and is selected)
+              await fetchDocuments();
+            }
+          } catch (err) {
+            console.error("Error parsing ingestion SSE line:", err);
           }
         }
       }
@@ -150,10 +230,10 @@ export default function ChatWorkspace() {
   // Search Query Handler
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim() || isSearching) return;
+    if (!query.trim() || isSearching || noSourceSelected) return;
 
     let convId = activeConversationId;
-    
+
     // Ensure conversation exists in SQLite before starting message stream
     if (!convId) {
       try {
@@ -173,6 +253,10 @@ export default function ChatWorkspace() {
     }
 
     const currentQuery = query;
+    const selectedFilenames = documents
+      .filter((d) => selectedDocIds.has(d.id))
+      .map((d) => d.filename);
+
     setQuery("");
     setIsSearching(true);
 
@@ -206,6 +290,7 @@ export default function ChatWorkspace() {
           user_message_id: userMessageId,
           assistant_message_id: assistantMessageId,
           top_k: 3,
+          sources: selectedFilenames,
         }),
       });
 
@@ -269,7 +354,7 @@ export default function ChatWorkspace() {
 
   return (
     <div className="flex h-screen w-full bg-neutral-100 dark:bg-[#0D0D0D] text-neutral-900 dark:text-neutral-100 overflow-hidden font-sans">
-      
+
       {/* LEFT SIDEBAR */}
       <aside className="w-64 border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#111111] flex flex-col p-4 gap-4 select-none">
         <div className="flex items-center justify-between">
@@ -321,6 +406,7 @@ export default function ChatWorkspace() {
             </h1>
             <p className="text-[11px] text-neutral-500">
               Multi-modal knowledge reasoning
+              {documents.length > 0 && ` · ${selectedDocIds.size} of ${documents.length} sources active`}
             </p>
           </div>
           <button
@@ -412,12 +498,17 @@ export default function ChatWorkspace() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Ask a question about your indexed documents..."
-              className="flex-1 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg px-4 py-2.5 text-xs text-neutral-900 dark:text-neutral-200 focus:outline-none focus:border-[#D4AF37]"
+              disabled={noSourceSelected}
+              placeholder={
+                noSourceSelected
+                  ? "Select at least one source in the Knowledge Base..."
+                  : "Ask a question about your selected documents..."
+              }
+              className="flex-1 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg px-4 py-2.5 text-xs text-neutral-900 dark:text-neutral-200 focus:outline-none focus:border-[#D4AF37] disabled:opacity-60"
             />
             <button
               type="submit"
-              disabled={isSearching || !query.trim()}
+              disabled={isSearching || !query.trim() || noSourceSelected}
               className="px-4 py-2.5 bg-[#D4AF37] text-black font-semibold rounded-lg text-xs hover:bg-[#E5C158] disabled:opacity-50 transition-all flex items-center gap-1.5 cursor-pointer"
             >
               {isSearching ? "Thinking..." : <Send size={14} />}
@@ -450,6 +541,8 @@ export default function ChatWorkspace() {
                 if (selected) {
                   handleIngestStream(selected);
                 }
+                // allow re-uploading the same file
+                e.target.value = "";
               }}
             />
           </label>
@@ -458,18 +551,59 @@ export default function ChatWorkspace() {
         {ingestStep > 0 && <IngestionStepper currentStep={ingestStep} errorMsg={ingestError} />}
 
         <div className="flex-1 overflow-y-auto space-y-2 pt-2 border-t border-neutral-200 dark:border-neutral-800">
-          <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
-            Sources ({uploadedSources.length})
-          </span>
-          {uploadedSources.length === 0 ? (
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+              Sources ({documents.length})
+            </span>
+            {documents.length > 0 && (
+              <button
+                onClick={toggleAllDocuments}
+                className="text-[10px] font-medium text-[#D4AF37] hover:underline cursor-pointer"
+              >
+                {selectedDocIds.size === documents.length ? "Deselect all" : "Select all"}
+              </button>
+            )}
+          </div>
+
+          {documents.length === 0 ? (
             <p className="text-xs text-neutral-500 dark:text-neutral-600 italic">No sources added yet</p>
           ) : (
-            uploadedSources.map((s, idx) => (
-              <div key={idx} className="flex items-center gap-2 p-2 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-800 dark:text-neutral-300">
-                <FileText size={14} className="text-[#D4AF37]" />
-                <span className="truncate">{s}</span>
-              </div>
-            ))
+            documents.map((doc) => {
+              const isSelected = selectedDocIds.has(doc.id);
+              const isDeleting = deletingDocId === doc.id;
+              return (
+                <div
+                  key={doc.id}
+                  className={`flex items-center gap-2 p-2 rounded-lg border text-xs transition-colors ${
+                    isSelected
+                      ? "bg-amber-500/10 border-[#D4AF37]/40 text-neutral-900 dark:text-neutral-100"
+                      : "bg-neutral-100 dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleDocument(doc.id)}
+                    disabled={isDeleting}
+                    className="accent-[#D4AF37] cursor-pointer shrink-0"
+                    aria-label={`Use ${doc.filename} as a source`}
+                  />
+                  <FileText size={14} className="text-[#D4AF37] shrink-0" />
+                  <span className="truncate flex-1" title={doc.filename}>
+                    {doc.filename}
+                  </span>
+                  <button
+                    onClick={() => handleDeleteDocument(doc)}
+                    disabled={isDeleting}
+                    className="p-1 rounded text-neutral-500 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-50 cursor-pointer shrink-0"
+                    aria-label={`Delete ${doc.filename}`}
+                    title="Delete document"
+                  >
+                    {isDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                  </button>
+                </div>
+              );
+            })
           )}
         </div>
       </aside>
