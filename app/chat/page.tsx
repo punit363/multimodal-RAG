@@ -31,43 +31,52 @@ interface ChatMessage {
 }
 
 interface Conversation {
-  id: number;
+  id: string;
   title: string;
   messages: ChatMessage[];
 }
 
 export default function ChatWorkspace() {
-  // Navigation & File Ingestion States
   const [file, setFile] = useState<File | null>(null);
   const [ingestStep, setIngestStep] = useState<number>(0);
   const [ingestError, setIngestError] = useState<string>("");
   const [uploadedSources, setUploadedSources] = useState<string[]>([]);
 
-  // Conversation & Chat History States
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<
-    number | null
-  >(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
 
-  // Lightbox State
-  const [activeLightbox, setActiveLightbox] = useState<LightboxData | null>(
-    null
-  );
-
-  // Auto-scroll ref
+  const [activeLightbox, setActiveLightbox] = useState<LightboxData | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const activeConversation = conversations.find(
-    (c) => c.id === activeConversationId
-  );
+  const activeConversation = conversations.find((c) => c.id === activeConversationId);
+
+  // Fetch persisted conversations from SQLite on initial page load
+  useEffect(() => {
+    fetchConversations();
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeConversation?.messages]);
 
-  // Handle PDF Upload with SSE Progress Stepper
+  const fetchConversations = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/conversations`);
+      if (res.ok) {
+        const data: Conversation[] = await res.json();
+        setConversations(data);
+        if (data.length > 0 && !activeConversationId) {
+          setActiveConversationId(data[0].id);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load conversations:", err);
+    }
+  };
+
+  // Document Upload Stream Handler
   const handleIngestStream = async (selectedFile: File) => {
     setFile(selectedFile);
     setIngestStep(1);
@@ -82,29 +91,34 @@ export default function ChatWorkspace() {
         body: formData,
       });
 
-      if (!response.body)
-        throw new Error("No response body from ingestion stream");
+      if (!response.body) throw new Error("No response body from ingestion stream");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let buffer = "";
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        const textChunk = decoder.decode(value);
-        const lines = textChunk.split("\n\n");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
-            const data = JSON.parse(line.replace("data: ", ""));
-            if (data.status === "error") {
-              setIngestError(data.label);
-              break;
-            }
-            setIngestStep(data.step);
-            if (data.status === "completed") {
-              setUploadedSources((prev) => [...prev, data.filename]);
+            try {
+              const data = JSON.parse(line.replace("data: ", "").trim());
+              if (data.status === "error") {
+                setIngestError(data.label);
+                break;
+              }
+              setIngestStep(data.step);
+              if (data.status === "completed") {
+                setUploadedSources((prev) => [...prev, data.filename]);
+              }
+            } catch (err) {
+              console.error("Error parsing ingestion SSE line:", err);
             }
           }
         }
@@ -114,65 +128,67 @@ export default function ChatWorkspace() {
     }
   };
 
-  // Start new conversation
-  const startNewConversation = () => {
-    const newId = conversations.length + 1;
-    const newConv: Conversation = {
-      id: newId,
-      title: `Conversation ${newId}`,
-      messages: [],
-    };
-    setConversations((prev) => [...prev, newConv]);
-    setActiveConversationId(newId);
-    setQuery("");
+  // Create new conversation on server
+  const startNewConversation = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/conversations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `Conversation ${conversations.length + 1}` }),
+      });
+      if (res.ok) {
+        const newConv: Conversation = await res.json();
+        setConversations((prev) => [newConv, ...prev]);
+        setActiveConversationId(newConv.id);
+        setQuery("");
+      }
+    } catch (err) {
+      console.error("Failed to create conversation:", err);
+    }
   };
 
-  // Handle Search Query with streaming history
+  // Search Query Handler
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim() || isSearching) return;
 
     let convId = activeConversationId;
+    
+    // Ensure conversation exists in SQLite before starting message stream
     if (!convId) {
-      const newId = conversations.length + 1;
-      const newConv: Conversation = {
-        id: newId,
-        title: query.length > 20 ? `${query.slice(0, 20)}...` : query,
-        messages: [],
-      };
-      setConversations((prev) => [...prev, newConv]);
-      setActiveConversationId(newId);
-      convId = newId;
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/conversations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: query.slice(0, 20) }),
+        });
+        const newConv: Conversation = await res.json();
+        convId = newConv.id;
+        setConversations((prev) => [newConv, ...prev]);
+        setActiveConversationId(convId);
+      } catch (err) {
+        console.error("Failed to auto-create conversation in SQLite:", err);
+        return;
+      }
     }
 
     const currentQuery = query;
-    setQuery(""); // Clear input box immediately
+    setQuery("");
     setIsSearching(true);
 
-    const userMessageId = `user-${Date.now()}`;
-    const assistantMessageId = `assistant-${Date.now()}`;
+    const userMessageId = `usr-${crypto.randomUUID()}`;
+    const assistantMessageId = `ast-${crypto.randomUUID()}`;
 
-    // Append User Message and empty Assistant Message shell
+    // Optimistically update local React UI state
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id === convId) {
           return {
             ...c,
-            title:
-              c.messages.length === 0
-                ? currentQuery.length > 22
-                  ? `${currentQuery.slice(0, 22)}...`
-                  : currentQuery
-                : c.title,
             messages: [
               ...c.messages,
               { id: userMessageId, role: "user", content: currentQuery },
-              {
-                id: assistantMessageId,
-                role: "assistant",
-                content: "",
-                sources: [],
-              },
+              { id: assistantMessageId, role: "assistant", content: "", sources: [] },
             ],
           };
         }
@@ -184,12 +200,16 @@ export default function ChatWorkspace() {
       const response = await fetch(`${API_BASE_URL}/api/chat-stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: currentQuery, top_k: 3 }),
+        body: JSON.stringify({
+          query: currentQuery,
+          conversation_id: convId,
+          user_message_id: userMessageId,
+          assistant_message_id: assistantMessageId,
+          top_k: 3,
+        }),
       });
 
-      if (!response.ok || !response.body) {
-        throw new Error("Failed to start stream");
-      }
+      if (!response.ok || !response.body) throw new Error("Stream connection failed");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -207,79 +227,53 @@ export default function ChatWorkspace() {
           if (line.startsWith("data: ")) {
             try {
               const data = JSON.parse(line.replace("data: ", ""));
-
               if (data.type === "sources") {
                 setConversations((prev) =>
-                  prev.map((c) => {
-                    if (c.id === convId) {
-                      return {
-                        ...c,
-                        messages: c.messages.map((m) =>
-                          m.id === assistantMessageId
-                            ? { ...m, sources: data.sources }
-                            : m
-                        ),
-                      };
-                    }
-                    return c;
-                  })
+                  prev.map((c) =>
+                    c.id === convId
+                      ? {
+                          ...c,
+                          messages: c.messages.map((m) =>
+                            m.id === assistantMessageId ? { ...m, sources: data.sources } : m
+                          ),
+                        }
+                      : c
+                  )
                 );
               } else if (data.type === "token") {
                 setConversations((prev) =>
-                  prev.map((c) => {
-                    if (c.id === convId) {
-                      return {
-                        ...c,
-                        messages: c.messages.map((m) =>
-                          m.id === assistantMessageId
-                            ? { ...m, content: m.content + data.token }
-                            : m
-                        ),
-                      };
-                    }
-                    return c;
-                  })
+                  prev.map((c) =>
+                    c.id === convId
+                      ? {
+                          ...c,
+                          messages: c.messages.map((m) =>
+                            m.id === assistantMessageId ? { ...m, content: m.content + data.token } : m
+                          ),
+                        }
+                      : c
+                  )
                 );
               }
             } catch (err) {
-              console.error("Error parsing SSE line:", err);
+              console.error("Error parsing SSE packet:", err);
             }
           }
         }
       }
     } catch (err: any) {
-      setConversations((prev) =>
-        prev.map((c) => {
-          if (c.id === convId) {
-            return {
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === assistantMessageId
-                  ? {
-                      ...m,
-                      content: `Error: ${err.message || "Streaming failed"}`,
-                    }
-                  : m
-              ),
-            };
-          }
-          return c;
-        })
-      );
+      console.error("Stream error:", err);
     } finally {
       setIsSearching(false);
     }
   };
 
   return (
-    <div className="flex h-screen w-full bg-neutral-100 dark:bg-[#0D0D0D] text-neutral-900 dark:text-neutral-100 overflow-hidden font-sans transition-colors duration-300">
-      {/* LEFT SIDEBAR: Navigation & Projects */}
+    <div className="flex h-screen w-full bg-neutral-100 dark:bg-[#0D0D0D] text-neutral-900 dark:text-neutral-100 overflow-hidden font-sans">
+      
+      {/* LEFT SIDEBAR */}
       <aside className="w-64 border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#111111] flex flex-col p-4 gap-4 select-none">
         <div className="flex items-center justify-between">
-          <Link
-            href="/"
-            className="flex items-center gap-2 font-bold text-sm tracking-wide text-neutral-800 dark:text-neutral-200 hover:text-[#D4AF37]"
-          >
+          <Link href="/" className="flex items-center gap-2 font-bold text-sm tracking-wide text-neutral-800 dark:text-neutral-200 hover:text-[#D4AF37]">
             <ArrowLeft size={16} /> MultiModal.RAG
           </Link>
           <ThemeToggle />
@@ -299,7 +293,7 @@ export default function ChatWorkspace() {
           </div>
         </div>
 
-        {/* Existing Conversations List */}
+        {/* Saved Conversations List */}
         <div className="flex-1 overflow-y-auto space-y-1 pt-2">
           {conversations.map((c) => (
             <div
@@ -318,9 +312,8 @@ export default function ChatWorkspace() {
         </div>
       </aside>
 
-      {/* CENTER WORKSPACE: Main Chat Area */}
+      {/* CENTER WORKSPACE */}
       <main className="flex-1 flex flex-col bg-white dark:bg-[#0A0A0A] relative overflow-hidden">
-        {/* Workspace Header */}
         <header className="h-14 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between px-6 bg-neutral-50 dark:bg-[#0D0D0D]">
           <div>
             <h1 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
@@ -332,38 +325,29 @@ export default function ChatWorkspace() {
           </div>
           <button
             onClick={startNewConversation}
-            className="flex items-center gap-1.5 py-1.5 px-3 rounded-md bg-neutral-900 text-white dark:bg-neutral-100 dark:text-black hover:bg-[#D4AF37] dark:hover:bg-[#D4AF37] text-xs font-semibold transition-all cursor-pointer"
+            className="flex items-center gap-1.5 py-1.5 px-3 rounded-md bg-neutral-900 text-white dark:bg-neutral-100 dark:text-black hover:bg-[#D4AF37] text-xs font-semibold transition-all cursor-pointer"
           >
             <Plus size={14} /> New conversation
           </button>
         </header>
 
-        {/* Workspace Content */}
+        {/* Chat Messages Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {!activeConversation || activeConversation.messages.length === 0 ? (
-            /* Empty State */
             <div className="h-full flex flex-col items-center justify-center text-center space-y-4 max-w-md mx-auto">
               <div className="w-12 h-12 rounded-xl border border-neutral-300 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900 flex items-center justify-center text-neutral-500">
                 <MessageSquare size={20} />
               </div>
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
-                  No conversations yet
+                  No messages in this project
                 </h3>
                 <p className="text-xs text-neutral-500 leading-relaxed">
-                  Start your first conversation in this project to analyze
-                  documents and get multi-modal insights.
+                  Ask a question to start analyzing your uploaded documents.
                 </p>
               </div>
-              <button
-                onClick={startNewConversation}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-900 text-white dark:bg-neutral-100 dark:text-black text-xs font-semibold hover:bg-[#D4AF37] dark:hover:bg-[#D4AF37] transition-all cursor-pointer shadow-lg"
-              >
-                <Plus size={14} /> Start first conversation
-              </button>
             </div>
           ) : (
-            /* Active Chat Stream History */
             <div className="max-w-3xl mx-auto space-y-6">
               {activeConversation.messages.map((msg) => (
                 <div key={msg.id} className="space-y-4">
@@ -378,7 +362,7 @@ export default function ChatWorkspace() {
                     </div>
                   ) : (
                     <div className="flex items-start gap-3">
-                      <div className="w-7 h-7 rounded-full bg-neutral-800 dark:bg-neutral-800 text-[#D4AF37] flex items-center justify-center font-bold text-xs shrink-0 border border-[#D4AF37]/40">
+                      <div className="w-7 h-7 rounded-full bg-neutral-800 text-[#D4AF37] flex items-center justify-center font-bold text-xs shrink-0 border border-[#D4AF37]/40">
                         <Bot size={14} />
                       </div>
                       <div className="space-y-4 flex-1">
@@ -405,9 +389,7 @@ export default function ChatWorkspace() {
                                 <SourceCitationCard
                                   key={chunk.chunk_id}
                                   chunk={chunk}
-                                  onOpenLightbox={(data) =>
-                                    setActiveLightbox(data)
-                                  }
+                                  onOpenLightbox={(data) => setActiveLightbox(data)}
                                 />
                               ))}
                             </div>
@@ -423,12 +405,9 @@ export default function ChatWorkspace() {
           )}
         </div>
 
-        {/* Input Query Bar */}
+        {/* Input Form */}
         <div className="p-4 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-[#0D0D0D]">
-          <form
-            onSubmit={handleSearch}
-            className="max-w-3xl mx-auto flex gap-2"
-          >
+          <form onSubmit={handleSearch} className="max-w-3xl mx-auto flex gap-2">
             <input
               type="text"
               value={query}
@@ -447,7 +426,7 @@ export default function ChatWorkspace() {
         </div>
       </main>
 
-      {/* RIGHT SIDEBAR: Knowledge Base & Stepper */}
+      {/* RIGHT SIDEBAR */}
       <aside className="w-80 border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-[#111111] flex flex-col p-4 gap-4 select-none">
         <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 pb-3">
           <Database size={16} className="text-[#D4AF37]" />
@@ -456,51 +435,37 @@ export default function ChatWorkspace() {
           </h2>
         </div>
 
-        {/* File Drag and Drop / Upload Area */}
         <div className="space-y-2">
-          <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
-            Add Sources
-          </span>
+          <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">Add Sources</span>
           <label className="border-2 border-dashed border-neutral-300 dark:border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-50 dark:bg-neutral-950/40 cursor-pointer transition-all">
             <UploadCloud size={20} className="text-neutral-500" />
-            <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">
-              Drop files or click to upload
-            </span>
-            <span className="text-[10px] text-neutral-500">
-              PDF documents supported
-            </span>
+            <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Drop files or click to upload</span>
+            <span className="text-[10px] text-neutral-500">PDF documents supported</span>
             <input
               type="file"
               accept=".pdf"
               className="hidden"
               onChange={(e) => {
                 const selected = e.target.files?.[0];
-                if (selected) handleIngestStream(selected);
+                if (selected) {
+                  handleIngestStream(selected);
+                }
               }}
             />
           </label>
         </div>
 
-        {/* Interactive Ingestion Stepper */}
-        {ingestStep > 0 && (
-          <IngestionStepper currentStep={ingestStep} errorMsg={ingestError} />
-        )}
+        {ingestStep > 0 && <IngestionStepper currentStep={ingestStep} errorMsg={ingestError} />}
 
-        {/* Uploaded Sources List */}
         <div className="flex-1 overflow-y-auto space-y-2 pt-2 border-t border-neutral-200 dark:border-neutral-800">
           <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
             Sources ({uploadedSources.length})
           </span>
           {uploadedSources.length === 0 ? (
-            <p className="text-xs text-neutral-500 dark:text-neutral-600 italic">
-              No sources added yet
-            </p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-600 italic">No sources added yet</p>
           ) : (
             uploadedSources.map((s, idx) => (
-              <div
-                key={idx}
-                className="flex items-center gap-2 p-2 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-800 dark:text-neutral-300"
-              >
+              <div key={idx} className="flex items-center gap-2 p-2 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-800 dark:text-neutral-300">
                 <FileText size={14} className="text-[#D4AF37]" />
                 <span className="truncate">{s}</span>
               </div>
@@ -509,10 +474,7 @@ export default function ChatWorkspace() {
         </div>
       </aside>
 
-      <CitationLightbox
-        data={activeLightbox}
-        onClose={() => setActiveLightbox(null)}
-      />
+      <CitationLightbox data={activeLightbox} onClose={() => setActiveLightbox(null)} />
     </div>
   );
 }
