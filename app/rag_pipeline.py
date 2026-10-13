@@ -1,255 +1,307 @@
+# app/rag_pipeline.py
+
 import os
 import json
-from typing import List, Dict, Any, Generator, Optional
+from typing import List, Dict, Any, Generator, Optional, Tuple
+
 from dotenv import load_dotenv
 
 from unstructured.partition.pdf import partition_pdf
 from unstructured.chunking.title import chunk_by_title
 
 from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
-from langchain_core.messages import HumanMessage
 
 load_dotenv()
 
 PERSIST_DIR = "db/chroma_db"
+
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embeddings)
+vectorstore = Chroma(
+    persist_directory=PERSIST_DIR,
+    embedding_function=embeddings,
+    collection_metadata={"hnsw:space": "cosine"},
+)
 llm = ChatOpenAI(model="gpt-4o", streaming=True, temperature=0.2)
 
-def get_indexed_documents() -> List[Dict[str, Any]]:
-    """Retrieves list of unique uploaded PDF documents stored in ChromaDB along with chunk counts."""
-    collection = vectorstore._collection
-    results = collection.get(include=["metadatas"])
-    metadatas = results.get("metadatas", [])
 
-    doc_stats = {}
-    for meta in metadatas:
+# ---------------------------------------------------------------------------
+# Index inspection / deletion
+# ---------------------------------------------------------------------------
+
+def get_indexed_documents() -> List[Dict[str, Any]]:
+    """Unique PDF filenames stored in Chroma, with chunk counts."""
+    results = vectorstore._collection.get(include=["metadatas"])
+    doc_stats: Dict[str, int] = {}
+    for meta in results.get("metadatas") or []:
         if meta and "filename" in meta:
             fn = meta["filename"]
             doc_stats[fn] = doc_stats.get(fn, 0) + 1
+    return [{"filename": fn, "chunk_count": n} for fn, n in doc_stats.items()]
 
-    return [{"filename": fn, "chunk_count": count} for fn, count in doc_stats.items()]
 
-def delete_document_from_chroma(filename: str) -> bool:
-    """Deletes all vector embeddings and chunks associated with a specific filename."""
-    collection = vectorstore._collection
-    collection.delete(where={"filename": filename})
+def delete_document_vectors(filename: str) -> bool:
+    """Delete every chunk that belongs to `filename`. Safe to call if none exist."""
+    vectorstore._collection.delete(where={"filename": filename})
     return True
 
+
+# Backwards-compatible alias for the old name
+delete_document_from_chroma = delete_document_vectors
+
+
+# ---------------------------------------------------------------------------
+# Ingestion
+# ---------------------------------------------------------------------------
+
 def partition_documents(file_path: str):
-    """Extract Elements from PDF using unstructured"""
-    elements = partition_pdf(
+    """Extract elements from a PDF using unstructured."""
+    return partition_pdf(
         filename=file_path,
         strategy="hi_res",
         infer_table_structure=True,
         extract_image_block_types=["Image"],
-        extract_image_block_to_payload=True
+        extract_image_block_to_payload=True,
     )
-    return elements
+
 
 def create_chunks_by_title(elements):
-    """Create intelligent chunks using title-based strategy"""
+    """Create title-based chunks."""
     return chunk_by_title(
         elements,
         max_characters=3000,
         new_after_n_chars=2400,
-        combine_text_under_n_chars=500
+        combine_text_under_n_chars=500,
     )
 
+
 def separate_content_types(chunk) -> Dict[str, Any]:
-    """Analyse and extract content types from chunk"""
-    content_data = {
-        'text': chunk.text,
-        'tables': [],
-        'images': [],
-        'types': ['text']
+    """Pull text, tables and images out of a chunk."""
+    content_data: Dict[str, Any] = {
+        "text": chunk.text,
+        "tables": [],
+        "images": [],
+        "types": ["text"],
     }
 
-    if hasattr(chunk, 'metadata') and hasattr(chunk.metadata, 'orig_elements'):
-        for element in chunk.metadata.orig_elements:
+    if hasattr(chunk, "metadata") and hasattr(chunk.metadata, "orig_elements"):
+        for element in chunk.metadata.orig_elements or []:
             element_type = type(element).__name__
-            if element_type == 'Table':
-                content_data['types'].append('table')
-                table_html = getattr(element.metadata, 'text_as_html', element.text)
-                content_data['tables'].append(table_html)
-            elif element_type == 'Image':
-                if hasattr(element, 'metadata') and hasattr(element.metadata, 'image_base64'):
-                    content_data['types'].append('image')
-                    image_base64 = getattr(element.metadata, 'image_base64', element.text)
-                    content_data['images'].append(image_base64)
+            if element_type == "Table":
+                content_data["types"].append("table")
+                table_html = getattr(element.metadata, "text_as_html", element.text)
+                content_data["tables"].append(table_html)
+            elif element_type == "Image":
+                if hasattr(element, "metadata") and hasattr(element.metadata, "image_base64"):
+                    content_data["types"].append("image")
+                    content_data["images"].append(
+                        getattr(element.metadata, "image_base64", element.text)
+                    )
 
-    content_data['types'] = list(set(content_data['types']))
+    content_data["types"] = list(set(content_data["types"]))
     return content_data
 
+
 def create_ai_enhanced_summary(text: str, tables: List[str], images: List[str]) -> str:
-    """Create AI enhanced summary for mixed content using gpt-4o"""
+    """Searchable description for mixed (text + table + image) content."""
     try:
-        llm = ChatOpenAI(model="gpt-4o", temperature=0)
-        prompt = f"You are creating a searchable description for document content retrieval.\n\nTEXT CONTENT:\n{text}"
-        
+        summary_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+        prompt = (
+            "You are creating a searchable description for document content retrieval."
+            f"\n\nTEXT CONTENT:\n{text}"
+        )
         if tables:
             prompt += "\nTABLES:\n"
             for i, table in enumerate(tables):
-                prompt += f"Table {i+1}:\n{table}\n\n"
+                prompt += f"Table {i + 1}:\n{table}\n\n"
+        prompt += (
+            "\nGenerate a detailed, searchable description covering key facts, "
+            "numbers, visual content, and concepts."
+        )
 
-        prompt += "\nGenerate a detailed, searchable description covering key facts, numbers, visual content, and concepts."
-
-        message_content = [{"type": "text", "text": prompt}]
+        message_content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
         for img_b64 in images:
-            message_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-            })
+            message_content.append(
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+            )
 
-        response = llm.invoke([HumanMessage(content=message_content)])
+        response = summary_llm.invoke([HumanMessage(content=message_content)])
         return response.content
     except Exception as e:
         print(f"Summary generation error: {e}")
         return text[:300]
 
-def process_and_store_documents(pdf_path: str):
-    """Full ingestion pipeline to create and persist vector store"""
-    elements = partition_documents(pdf_path)
-    chunks = create_chunks_by_title(elements)
-    
-    langchain_documents = []
-    for chunk in chunks:
+
+def build_documents(chunks, filename: str) -> List[Document]:
+    """Turn chunks into LangChain Documents tagged with the source filename.
+
+    The `filename` metadata is what source selection and delete rely on.
+    """
+    documents: List[Document] = []
+    for i, chunk in enumerate(chunks):
         content_data = separate_content_types(chunk)
-        
-        if content_data['tables'] or content_data['images']:
+
+        if content_data["tables"] or content_data["images"]:
             enhanced_content = create_ai_enhanced_summary(
-                content_data['text'],
-                content_data['tables'],
-                content_data['images']
+                content_data["text"], content_data["tables"], content_data["images"]
             )
         else:
-            enhanced_content = content_data['text']
+            enhanced_content = content_data["text"]
 
-        doc = Document(
-            page_content=enhanced_content,
-            metadata={
-                "original_content": json.dumps({
-                    "raw_text": content_data['text'],
-                    "tables_html": content_data['tables'],
-                    "images_base64": content_data['images']
-                })
+        documents.append(
+            Document(
+                page_content=enhanced_content,
+                metadata={
+                    "filename": filename,
+                    "chunk_index": i,
+                    "chunk_id": f"{filename}::{i}",
+                    "original_content": json.dumps(
+                        {
+                            "raw_text": content_data["text"],
+                            "tables_html": content_data["tables"],
+                            "images_base64": content_data["images"],
+                        }
+                    ),
+                },
+            )
+        )
+    return documents
+
+
+def store_documents(documents: List[Document]) -> None:
+    """Embed and persist documents in the shared vector store."""
+    if not documents:
+        return
+    ids = [d.metadata["chunk_id"] for d in documents]
+    vectorstore.add_documents(documents, ids=ids)
+
+
+def process_and_store_documents(pdf_path: str) -> None:
+    """Convenience wrapper: partition -> chunk -> summarise -> store."""
+    filename = os.path.basename(pdf_path)
+    elements = partition_documents(pdf_path)
+    chunks = create_chunks_by_title(elements)
+    delete_document_vectors(filename)  # replace any previous version
+    store_documents(build_documents(chunks, filename))
+
+
+# ---------------------------------------------------------------------------
+# Retrieval helpers
+# ---------------------------------------------------------------------------
+
+def _source_filter(sources: Optional[List[str]]) -> Optional[Dict[str, Any]]:
+    if not sources:
+        return None
+    return {"filename": {"$in": list(sources)}}
+
+
+def _original_content(doc: Document) -> Dict[str, Any]:
+    raw = doc.metadata.get("original_content") or doc.metadata.get("orignal_content")
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+    return raw or {}
+
+
+def _retrieve(query: str, k: int, sources: Optional[List[str]]) -> List[Document]:
+    return vectorstore.similarity_search(query, k=k, filter=_source_filter(sources))
+
+
+def _build_context(
+    docs: List[Document],
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Return (context_text, image_parts, sources_for_the_ui)."""
+    context = ""
+    image_parts: List[Dict[str, Any]] = []
+    sources: List[Dict[str, Any]] = []
+
+    for i, doc in enumerate(docs):
+        original = _original_content(doc)
+        filename = doc.metadata.get("filename", "Unknown Document")
+
+        context += f"--- Document {i + 1} [{filename}] ---\n"
+        if original.get("raw_text"):
+            context += f"TEXT:\n{original['raw_text']}\n\n"
+        for j, table in enumerate(original.get("tables_html", [])):
+            context += f"Table {j + 1}:\n{table}\n\n"
+
+        for img_b64 in original.get("images_base64", []):
+            image_parts.append(
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+            )
+
+        # Superset shape so the UI works whichever fields the citation card reads
+        sources.append(
+            {
+                "chunk_id": i + 1,
+                "filename": filename,
+                "content": doc.page_content,
+                "enhanced_content": doc.page_content,
+                "tables": original.get("tables_html", []),
+                "images": original.get("images_base64", []),
+                "metadata": {"filename": filename, "original_content": original},
             }
         )
-        langchain_documents.append(doc)
 
-    embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
-    db = Chroma.from_documents(
-        documents=langchain_documents,
-        embedding=embedding_model,
-        persist_directory=PERSIST_DIR,
-        collection_metadata={"hnsw:space": "cosine"}
+    return context, image_parts, sources
+
+
+# ---------------------------------------------------------------------------
+# Answering
+# ---------------------------------------------------------------------------
+
+def answer_query(
+    query: str, k: int = 3, sources: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Non-streaming answer."""
+    docs = _retrieve(query, k, sources)
+    context, image_parts, formatted_sources = _build_context(docs)
+
+    prompt_text = (
+        f"Based on the following documents, please answer this question: {query}\n\n"
+        f"CONTENT TO ANALYZE:\n{context or 'No matching document context found.'}\nANSWER:"
     )
-    return db
-
-def answer_query(query: str, k: int = 3) -> Dict[str, Any]:
-    """Query ChromaDB and generate final response"""
-    embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
-    db = Chroma(
-        persist_directory=PERSIST_DIR,
-        embedding_function=embedding_model
-    )
-    
-    retriever = db.as_retriever(search_kwargs={"k": k})
-    chunks = retriever.invoke(query)
-
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
-    
-    prompt_text = f"Based on the following documents, please answer this question: {query}\n\nCONTENT TO ANALYZE:\n"
-    formatted_sources = []
-
-    message_content = []
-
-    for i, chunk in enumerate(chunks):
-        raw_content = chunk.metadata.get("original_content") or chunk.metadata.get("orignal_content")
-        original_data = json.loads(raw_content) if isinstance(raw_content, str) else (raw_content or {})
-        
-        prompt_text += f"--- Document {i+1} ---\n"
-        if original_data.get("raw_text"):
-            prompt_text += f"TEXT:\n{original_data['raw_text']}\n\n"
-        if original_data.get("tables_html"):
-            for j, table in enumerate(original_data["tables_html"]):
-                prompt_text += f"Table {j+1}:\n{table}\n\n"
-
-        # Collect images for GPT-4o vision
-        for img_b64 in original_data.get("images_base64", []):
-            message_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-            })
-
-        formatted_sources.append({
-            "chunk_id": i + 1,
-            "enhanced_content": chunk.page_content,
-            "metadata": {"original_content": original_data}
-        })
-
-    prompt_text += "\nANSWER:"
-    message_content.insert(0, {"type": "text", "text": prompt_text})
-
+    message_content = [{"type": "text", "text": prompt_text}, *image_parts]
     response = llm.invoke([HumanMessage(content=message_content)])
 
-    return {
-        "answer": response.content,
-        "sources": formatted_sources
-    }
+    return {"answer": response.content, "sources": formatted_sources}
+
 
 def answer_query_stream(
-    query: str, 
-    k: int = 3, 
-    selected_documents: Optional[List[str]] = None
+    query: str,
+    k: int = 3,
+    sources: Optional[List[str]] = None,
 ) -> Generator[str, None, None]:
+    """Stream SSE events: one `sources` event, many `token` events, then `done`.
+
+    If `sources` (a list of filenames) is given, retrieval is restricted to them.
     """
-    RAG Stream generator with metadata filtering.
-    If `selected_documents` is provided, ChromaDB vector search is restricted strictly to those filenames.
-    """
-    # Build metadata filter for ChromaDB
-    search_kwargs = {"k": k}
-    if selected_documents and len(selected_documents) > 0:
-        if len(selected_documents) == 1:
-            search_kwargs["filter"] = {"filename": selected_documents[0]}
-        else:
-            search_kwargs["filter"] = {"filename": {"\$in": selected_documents}}
+    try:
+        docs = _retrieve(query, k, sources)
+        context, image_parts, formatted_sources = _build_context(docs)
 
-    retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
-    retrieved_docs = retriever.invoke(query)
+        yield f"data: {json.dumps({'type': 'sources', 'sources': formatted_sources})}\n\n"
 
-    sources = []
-    for doc in retrieved_docs:
-        meta = doc.metadata or {}
-        sources.append({
-            "content": doc.page_content,
-            "filename": meta.get("filename", "Unknown Document"),
-            "chunk_id": meta.get("chunk_id", "N/A"),
-            "tables": json.loads(meta.get("tables", "[]")) if meta.get("tables") else [],
-            "images": json.loads(meta.get("images", "[]")) if meta.get("images") else []
-        })
+        system_prompt = (
+            "You are an expert AI assistant performing RAG analysis over multi-modal context.\n"
+            "Answer the user query based ONLY on the provided contextual chunks.\n"
+            "Cite the document source (filename) when explaining findings.\n"
+            "If the context does not contain the answer, say so.\n\n"
+            f"Context:\n{context or 'No matching document context found.'}"
+        )
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=[{"type": "text", "text": query}, *image_parts]),
+        ]
 
-    # Yield retrieved document sources event
-    yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+        for chunk in llm.stream(messages):
+            if chunk.content:
+                yield f"data: {json.dumps({'type': 'token', 'token': chunk.content})}\n\n"
 
-    context_str = "\n\n---\n\n".join([f"[{s['filename']}]\n{s['content']}" for s in sources])
-
-    system_prompt = (
-        "You are an expert AI assistant performing RAG analysis over multi-modal context.\n"
-        "Answer the user query based ONLY on the provided contextual chunks.\n"
-        "Cite the document source details when explaining findings.\n\n"
-        f"Context:\n{context_str if context_str else 'No matching document context found.'}"
-    )
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": query}
-    ]
-
-    for chunk in llm.stream(messages):
-        if chunk.content:
-            yield f"data: {json.dumps({'type': 'token', 'token': chunk.content})}\n\n"
-
-    yield "data: {\"type\": \"done\"}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"

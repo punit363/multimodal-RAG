@@ -2,6 +2,7 @@
 
 import sqlite3
 import json
+import uuid
 import logging
 from typing import List, Dict, Any, Optional
 
@@ -42,6 +43,13 @@ def init_db() -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages (conversation_id)"
         )
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
     logger.info("SQLite database initialized successfully.")
 
@@ -150,3 +158,47 @@ def update_message_content(
         logger.info("Updated message content -> id: %s", msg_id)
     except Exception:
         logger.exception("Failed to update message %s", msg_id)
+
+
+# ---------------------------------------------------------------------------
+# Documents (the knowledge-base registry shown in the UI)
+# ---------------------------------------------------------------------------
+
+def add_document(filename: str) -> Dict[str, Any]:
+    """Register an indexed document. Re-uploading the same filename keeps its id."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "INSERT OR IGNORE INTO documents (id, filename) VALUES (?, ?)",
+            (str(uuid.uuid4()), filename),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM documents WHERE filename = ?", (filename,)
+        ).fetchone()
+    return dict(row)
+
+
+def list_documents() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM documents ORDER BY created_at ASC, rowid ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_document_record(doc_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        conn.commit()
+    logger.info("Deleted document record: %s", doc_id)
