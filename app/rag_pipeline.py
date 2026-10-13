@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Generator, Optional
 from dotenv import load_dotenv
 
 from unstructured.partition.pdf import partition_pdf
@@ -14,6 +14,29 @@ from langchain_core.messages import HumanMessage
 load_dotenv()
 
 PERSIST_DIR = "db/chroma_db"
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=embeddings)
+llm = ChatOpenAI(model="gpt-4o", streaming=True, temperature=0.2)
+
+def get_indexed_documents() -> List[Dict[str, Any]]:
+    """Retrieves list of unique uploaded PDF documents stored in ChromaDB along with chunk counts."""
+    collection = vectorstore._collection
+    results = collection.get(include=["metadatas"])
+    metadatas = results.get("metadatas", [])
+
+    doc_stats = {}
+    for meta in metadatas:
+        if meta and "filename" in meta:
+            fn = meta["filename"]
+            doc_stats[fn] = doc_stats.get(fn, 0) + 1
+
+    return [{"filename": fn, "chunk_count": count} for fn, count in doc_stats.items()]
+
+def delete_document_from_chroma(filename: str) -> bool:
+    """Deletes all vector embeddings and chunks associated with a specific filename."""
+    collection = vectorstore._collection
+    collection.delete(where={"filename": filename})
+    return True
 
 def partition_documents(file_path: str):
     """Extract Elements from PDF using unstructured"""
@@ -177,58 +200,56 @@ def answer_query(query: str, k: int = 3) -> Dict[str, Any]:
         "sources": formatted_sources
     }
 
+def answer_query_stream(
+    query: str, 
+    k: int = 3, 
+    selected_documents: Optional[List[str]] = None
+) -> Generator[str, None, None]:
+    """
+    RAG Stream generator with metadata filtering.
+    If `selected_documents` is provided, ChromaDB vector search is restricted strictly to those filenames.
+    """
+    # Build metadata filter for ChromaDB
+    search_kwargs = {"k": k}
+    if selected_documents and len(selected_documents) > 0:
+        if len(selected_documents) == 1:
+            search_kwargs["filter"] = {"filename": selected_documents[0]}
+        else:
+            search_kwargs["filter"] = {"filename": {"\$in": selected_documents}}
 
-def answer_query_stream(query: str, k: int = 3):
-    """Generator function that yields SSE data packets for sources and token chunks"""
-    embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
-    db = Chroma(
-        persist_directory=PERSIST_DIR,
-        embedding_function=embedding_model
-    )
-    
-    retriever = db.as_retriever(search_kwargs={"k": k})
-    chunks = retriever.invoke(query)
+    retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
+    retrieved_docs = retriever.invoke(query)
 
-    prompt_text = f"Based on the following documents, please answer this question: {query}\n\nCONTENT TO ANALYZE:\n"
-    formatted_sources = []
-    message_content = []
-
-    for i, chunk in enumerate(chunks):
-        raw_content = chunk.metadata.get("original_content") or chunk.metadata.get("orignal_content")
-        original_data = json.loads(raw_content) if isinstance(raw_content, str) else (raw_content or {})
-        
-        prompt_text += f"--- Document {i+1} ---\n"
-        if original_data.get("raw_text"):
-            prompt_text += f"TEXT:\n{original_data['raw_text']}\n\n"
-        if original_data.get("tables_html"):
-            for j, table in enumerate(original_data["tables_html"]):
-                prompt_text += f"Table {j+1}:\n{table}\n\n"
-
-        for img_b64 in original_data.get("images_base64", []):
-            message_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-            })
-
-        formatted_sources.append({
-            "chunk_id": i + 1,
-            "enhanced_content": chunk.page_content,
-            "metadata": {"original_content": original_data}
+    sources = []
+    for doc in retrieved_docs:
+        meta = doc.metadata or {}
+        sources.append({
+            "content": doc.page_content,
+            "filename": meta.get("filename", "Unknown Document"),
+            "chunk_id": meta.get("chunk_id", "N/A"),
+            "tables": json.loads(meta.get("tables", "[]")) if meta.get("tables") else [],
+            "images": json.loads(meta.get("images", "[]")) if meta.get("images") else []
         })
 
-    prompt_text += "\nANSWER:"
-    message_content.insert(0, {"type": "text", "text": prompt_text})
+    # Yield retrieved document sources event
+    yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
 
-    # 1. Yield retrieved sources first
-    yield f"data: {json.dumps({'type': 'sources', 'sources': formatted_sources})}\n\n"
+    context_str = "\n\n---\n\n".join([f"[{s['filename']}]\n{s['content']}" for s in sources])
 
-    # 2. Initialize streaming LLM model
-    llm = ChatOpenAI(model="gpt-4o", temperature=0, streaming=True)
+    system_prompt = (
+        "You are an expert AI assistant performing RAG analysis over multi-modal context.\n"
+        "Answer the user query based ONLY on the provided contextual chunks.\n"
+        "Cite the document source details when explaining findings.\n\n"
+        f"Context:\n{context_str if context_str else 'No matching document context found.'}"
+    )
 
-    # 3. Stream tokens in real-time
-    for chunk in llm.stream([HumanMessage(content=message_content)]):
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": query}
+    ]
+
+    for chunk in llm.stream(messages):
         if chunk.content:
             yield f"data: {json.dumps({'type': 'token', 'token': chunk.content})}\n\n"
 
-    # 4. Signal completion
-    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+    yield "data: {\"type\": \"done\"}\n\n"
