@@ -1,0 +1,30 @@
+/* app/globals.css */
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@layer utilities {
+  /* Rich Metallic Gold Palette */
+  .text-gold {
+    color: #D4AF37;
+  }
+  .bg-gold {
+    background-color: #D4AF37;
+  }
+  .border-gold {
+    border-color: #D4AF37;
+  }
+
+  /* Deep Metallic Gold Gradient for Buttons & Accent Node */
+  .bg-gold-gradient {
+    background: linear-gradient(135deg, #F3E5AB 0%, #D4AF37 50%, #AA7C11 100%);
+  }
+
+  /* Subtle Gold Glow Effects */
+  .shadow-gold-glow {
+    box-shadow: 0 0 25px rgba(212, 175, 55, 0.25);
+  }
+  .shadow-gold-node {
+    box-shadow: 0 0 50px rgba(212, 175, 55, 0.35);
+  }
+}
