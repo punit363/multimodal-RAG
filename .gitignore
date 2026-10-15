@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environments and data
+.env
+.venv/
+venv/
+rag_history.db*
+db/
+docs/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
+

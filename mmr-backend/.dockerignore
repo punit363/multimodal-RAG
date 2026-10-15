@@ -1,0 +1,10 @@
+.env
+.git
+__pycache__
+*.py[cod]
+venv
+db
+docs
+rag_history.db*
+tests
+

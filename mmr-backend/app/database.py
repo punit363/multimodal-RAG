@@ -1,12 +1,13 @@
 # app/database.py
 
+import os
 import sqlite3
 import json
 import uuid
 import logging
 from typing import List, Dict, Any, Optional
 
-DB_PATH = "rag_history.db"
+DB_PATH = os.getenv("RAG_DATABASE_PATH", "rag_history.db")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag_db")
