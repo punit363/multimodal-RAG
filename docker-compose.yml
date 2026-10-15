@@ -1,0 +1,35 @@
+services:
+  backend:
+    build:
+      context: ./mmr-backend
+    env_file:
+      - ./mmr-backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend-docs:/app/docs
+      - backend-db:/app/db
+      - backend-history:/app/data
+    environment:
+      RAG_DATABASE_PATH: /app/data/rag_history.db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./mmr-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend-docs:
+  backend-db:
+  backend-history:
+
