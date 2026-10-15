@@ -2,7 +2,7 @@
 "use client";
 
 import React from "react";
-import { CheckCircle2, Loader2, AlertCircle } from "lucide-react";
+import { CheckCircle2, Loader2, AlertCircle, RotateCcw, X } from "lucide-react";
 
 export interface StepState {
   step: number;
@@ -17,7 +17,21 @@ const STEPS = [
   { id: 4, name: "Persisting ChromaDB Embeddings" },
 ];
 
-export function IngestionStepper({ currentStep, errorMsg }: { currentStep: number; errorMsg?: string }) {
+interface IngestionStepperProps {
+  currentStep: number;
+  errorMsg?: string;
+  isRunning?: boolean;
+  onCancel?: () => void;
+  onRetry?: () => void;
+}
+
+export function IngestionStepper({
+  currentStep,
+  errorMsg,
+  isRunning,
+  onCancel,
+  onRetry,
+}: IngestionStepperProps) {
   return (
     <div className="space-y-3 p-4 rounded-xl border border-neutral-800 bg-neutral-900/60">
       <div className="text-xs font-mono uppercase tracking-wider text-amber-500 font-semibold">
@@ -56,10 +70,31 @@ export function IngestionStepper({ currentStep, errorMsg }: { currentStep: numbe
       </div>
 
       {errorMsg && (
-        <div className="flex items-center gap-2 text-xs text-red-400 mt-2 pt-2 border-t border-neutral-800">
-          <AlertCircle size={14} />
-          <span>{errorMsg}</span>
+        <div className="space-y-2 text-xs text-red-400 mt-2 pt-2 border-t border-neutral-800">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} />
+            <span>{errorMsg}</span>
+          </div>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="inline-flex items-center gap-1 rounded border border-red-500/40 px-2 py-1 text-[11px] hover:bg-red-500/10"
+            >
+              <RotateCcw size={12} /> Retry upload
+            </button>
+          )}
         </div>
+      )}
+
+      {isRunning && onCancel && (
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex items-center gap-1 text-[11px] text-neutral-400 hover:text-red-400"
+        >
+          <X size={12} /> Cancel ingestion
+        </button>
       )}
     </div>
   );

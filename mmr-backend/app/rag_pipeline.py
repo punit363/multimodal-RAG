@@ -13,6 +13,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
+from app.security import sanitize_table_html
 
 load_dotenv()
 
@@ -42,9 +43,16 @@ def get_indexed_documents() -> List[Dict[str, Any]]:
     return [{"filename": fn, "chunk_count": n} for fn, n in doc_stats.items()]
 
 
-def delete_document_vectors(filename: str) -> bool:
-    """Delete every chunk that belongs to `filename`. Safe to call if none exist."""
-    vectorstore._collection.delete(where={"filename": filename})
+def delete_document_vectors(document_id: str) -> bool:
+    """Delete every chunk that belongs to an immutable document id."""
+    vectorstore._collection.delete(
+        where={
+            "$or": [
+                {"document_id": document_id},
+                {"filename": document_id},
+            ]
+        }
+    )
     return True
 
 
@@ -91,7 +99,9 @@ def separate_content_types(chunk) -> Dict[str, Any]:
             element_type = type(element).__name__
             if element_type == "Table":
                 content_data["types"].append("table")
-                table_html = getattr(element.metadata, "text_as_html", element.text)
+                table_html = sanitize_table_html(
+                    getattr(element.metadata, "text_as_html", element.text)
+                )
                 content_data["tables"].append(table_html)
             elif element_type == "Image":
                 if hasattr(element, "metadata") and hasattr(element.metadata, "image_base64"):
@@ -134,11 +144,14 @@ def create_ai_enhanced_summary(text: str, tables: List[str], images: List[str]) 
         return text[:300]
 
 
-def build_documents(chunks, filename: str) -> List[Document]:
+def build_documents(
+    chunks, filename: str, document_id: Optional[str] = None
+) -> List[Document]:
     """Turn chunks into LangChain Documents tagged with the source filename.
 
     The `filename` metadata is what source selection and delete rely on.
     """
+    source_id = document_id or filename
     documents: List[Document] = []
     for i, chunk in enumerate(chunks):
         content_data = separate_content_types(chunk)
@@ -155,8 +168,9 @@ def build_documents(chunks, filename: str) -> List[Document]:
                 page_content=enhanced_content,
                 metadata={
                     "filename": filename,
+                    "document_id": source_id,
                     "chunk_index": i,
-                    "chunk_id": f"{filename}::{i}",
+                    "chunk_id": f"{source_id}::{i}",
                     "original_content": json.dumps(
                         {
                             "raw_text": content_data["text"],
@@ -183,8 +197,9 @@ def process_and_store_documents(pdf_path: str) -> None:
     filename = os.path.basename(pdf_path)
     elements = partition_documents(pdf_path)
     chunks = create_chunks_by_title(elements)
-    delete_document_vectors(filename)  # replace any previous version
-    store_documents(build_documents(chunks, filename))
+    document_id = os.path.splitext(filename)[0]
+    delete_document_vectors(document_id)
+    store_documents(build_documents(chunks, filename, document_id))
 
 
 # ---------------------------------------------------------------------------
@@ -194,17 +209,27 @@ def process_and_store_documents(pdf_path: str) -> None:
 def _source_filter(sources: Optional[List[str]]) -> Optional[Dict[str, Any]]:
     if not sources:
         return None
-    return {"filename": {"$in": list(sources)}}
+    return {
+        "$or": [
+            {"document_id": {"$in": list(sources)}},
+            {"filename": {"$in": list(sources)}},
+        ]
+    }
 
 
 def _original_content(doc: Document) -> Dict[str, Any]:
     raw = doc.metadata.get("original_content") or doc.metadata.get("orignal_content")
     if isinstance(raw, str):
         try:
-            return json.loads(raw)
+            content = json.loads(raw)
         except Exception:
-            return {}
-    return raw or {}
+            content = {}
+    else:
+        content = raw or {}
+    content["tables_html"] = [
+        sanitize_table_html(table) for table in content.get("tables_html", [])
+    ]
+    return content
 
 
 def _retrieve(query: str, k: int, sources: Optional[List[str]]) -> List[Document]:
@@ -222,6 +247,7 @@ def _build_context(
     for i, doc in enumerate(docs):
         original = _original_content(doc)
         filename = doc.metadata.get("filename", "Unknown Document")
+        document_id = doc.metadata.get("document_id", filename)
 
         context += f"--- Document {i + 1} [{filename}] ---\n"
         if original.get("raw_text"):
@@ -238,12 +264,17 @@ def _build_context(
         sources.append(
             {
                 "chunk_id": i + 1,
+                "document_id": document_id,
                 "filename": filename,
                 "content": doc.page_content,
                 "enhanced_content": doc.page_content,
                 "tables": original.get("tables_html", []),
                 "images": original.get("images_base64", []),
-                "metadata": {"filename": filename, "original_content": original},
+                "metadata": {
+                    "document_id": document_id,
+                    "filename": filename,
+                    "original_content": original,
+                },
             }
         )
 

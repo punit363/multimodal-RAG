@@ -8,3 +8,5 @@ langchain-core
 langchain-openai
 langchain-chroma
 pydantic
+nh3
+pypdf

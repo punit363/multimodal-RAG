@@ -3,15 +3,16 @@
 import os
 import json
 import uuid
-import shutil
 import asyncio
 import logging
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from pypdf import PdfReader
 
 from app.rag_pipeline import (
     partition_documents,
@@ -32,6 +33,7 @@ from app.database import (
     list_documents,
     get_document,
     delete_document_record,
+    update_document_status,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -50,16 +52,28 @@ def startup_event():
 
 # Single CORS config. Wildcard origins are invalid together with
 # allow_credentials=True, so list the frontend origins explicitly.
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "RAG_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
+    ).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = "docs"
+UPLOAD_DIR = os.getenv("RAG_UPLOAD_DIR", "docs")
+MAX_UPLOAD_BYTES = int(os.getenv("RAG_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+MAX_PDF_PAGES = int(os.getenv("RAG_MAX_PDF_PAGES", "200"))
+QUARANTINE_DIR = os.path.join(UPLOAD_DIR, ".quarantine")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(QUARANTINE_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +91,7 @@ class StreamQueryRequest(BaseModel):
     user_message_id: str
     assistant_message_id: str
     top_k: int = 3
-    # Filenames the user selected as sources. None/empty = search everything.
+    # Immutable document ids selected as sources. None/empty = search everything.
     sources: Optional[List[str]] = None
 
 
@@ -102,47 +116,149 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+async def _save_and_validate_pdf(file: UploadFile, file_path: str) -> None:
+    filename = os.path.basename(file.filename or "")
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="The uploaded file must use the application/pdf MIME type.")
+
+    total = 0
+    signature = b""
+    try:
+        with open(file_path, "wb") as destination:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"PDF exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
+                    )
+                if not signature:
+                    signature = chunk[:5]
+                destination.write(chunk)
+    except Exception:
+        Path(file_path).unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+    if signature != b"%PDF-":
+        Path(file_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="The uploaded file does not have a valid PDF signature.")
+
+    try:
+        reader = await asyncio.to_thread(PdfReader, file_path)
+        if reader.is_encrypted:
+            raise ValueError("Encrypted PDFs are not supported.")
+        page_count = len(reader.pages)
+    except ValueError as exc:
+        Path(file_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        Path(file_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="The uploaded PDF is malformed or unreadable.") from exc
+
+    if page_count == 0 or page_count > MAX_PDF_PAGES:
+        Path(file_path).unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"PDF must contain between 1 and {MAX_PDF_PAGES} pages.",
+        )
+
+
+async def _cleanup_failed_ingestion(doc_id: str, file_path: str, reason: str) -> None:
+    cleanup_errors = []
+    try:
+        await asyncio.to_thread(delete_document_vectors, doc_id)
+    except Exception as exc:
+        cleanup_errors.append(f"vector cleanup: {exc}")
+
+    if not cleanup_errors:
+        try:
+            Path(file_path).unlink(missing_ok=True)
+            delete_document_record(doc_id)
+            return
+        except Exception as exc:
+            cleanup_errors.append(f"storage cleanup: {exc}")
+
+    try:
+        if os.path.exists(file_path):
+            os.replace(file_path, os.path.join(QUARANTINE_DIR, f"{doc_id}.pdf.failed"))
+        update_document_status(
+            doc_id,
+            "failed",
+            f"{reason}; cleanup pending: {'; '.join(cleanup_errors)}",
+        )
+    except Exception:
+        logger.exception("Failed to quarantine partial ingestion %s", doc_id)
+
+
+async def _run_ingestion_step(function, *args):
+    """Finish an active worker before propagating cancellation to avoid cleanup races."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await task
+        finally:
+            raise
+
+
 @app.post("/api/ingest-stream")
 async def ingest_document_stream(file: UploadFile = File(...)):
     """Upload a PDF and stream step-by-step progress events."""
     filename = os.path.basename(file.filename or "")
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    document_id = str(uuid.uuid4())
+    storage_name = f"{document_id}.pdf"
+    file_path = os.path.join(UPLOAD_DIR, storage_name)
+    await _save_and_validate_pdf(file, file_path)
+    add_document(
+        filename,
+        doc_id=document_id,
+        storage_name=storage_name,
+        status="processing",
+    )
 
     async def event_generator():
         try:
-            # Step 1: partition the PDF layout (slow, done once)
             yield _sse({"step": 1, "label": "Partitioning PDF Layout...", "status": "in_progress"})
-            elements = await asyncio.to_thread(partition_documents, file_path)
+            elements = await _run_ingestion_step(partition_documents, file_path)
 
-            # Step 2: chunk + categorise content (text / tables / images)
             yield _sse({"step": 2, "label": "Extracting Text, Tables & Images...", "status": "in_progress"})
-            chunks = await asyncio.to_thread(create_chunks_by_title, elements)
+            chunks = await _run_ingestion_step(create_chunks_by_title, elements)
 
-            # Step 3: multi-modal AI summaries
             yield _sse({"step": 3, "label": "Generating Multi-Modal AI Summaries...", "status": "in_progress"})
-            documents = await asyncio.to_thread(build_documents, chunks, filename)
+            documents = await _run_ingestion_step(
+                build_documents, chunks, filename, document_id
+            )
 
-            # Step 4: embeddings + vector store (replaces any previous upload of this file)
             yield _sse({"step": 4, "label": "Generating Embeddings & Storing in ChromaDB...", "status": "in_progress"})
-            await asyncio.to_thread(delete_document_vectors, filename)
-            await asyncio.to_thread(store_documents, documents)
+            await _run_ingestion_step(store_documents, documents)
 
-            doc = add_document(filename)
+            update_document_status(document_id, "ready")
             yield _sse({
                 "step": 5,
                 "label": "Document Indexing Complete!",
                 "status": "completed",
                 "filename": filename,
-                "document_id": doc["id"],
+                "document_id": document_id,
             })
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                _cleanup_failed_ingestion(document_id, file_path, "Upload cancelled")
+            )
+            raise
         except Exception as e:
             logger.exception("Ingestion failed")
-            yield _sse({"step": -1, "label": f"Error: {e}", "status": "error"})
+            await _cleanup_failed_ingestion(document_id, file_path, str(e))
+            yield _sse({
+                "step": -1,
+                "label": "Ingestion failed. The partial document was cleaned up; retry the upload.",
+                "status": "error",
+                "retryable": True,
+            })
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -194,6 +310,7 @@ def chat_query_stream(request: StreamQueryRequest):
     def event_generator():
         accumulated_answer = ""
         retrieved_sources = []
+        stream_error = ""
 
         try:
             for sse_line in answer_query_stream(
@@ -208,13 +325,18 @@ def chat_query_stream(request: StreamQueryRequest):
                             retrieved_sources = data.get("sources", [])
                         elif data.get("type") == "token":
                             accumulated_answer += data.get("token", "")
+                        elif data.get("type") == "error":
+                            stream_error = data.get("message", "Answer generation failed.")
                     except Exception:
                         pass
         finally:
             # 4. Persist the full answer once the stream ends (or is aborted)
             update_message_content(
                 msg_id=request.assistant_message_id,
-                content=accumulated_answer or "Completed.",
+                content=(
+                    accumulated_answer
+                    or (f"Answer failed: {stream_error}" if stream_error else "Answer stream was interrupted. Retry the question.")
+                ),
                 sources=retrieved_sources,
             )
 
@@ -245,7 +367,13 @@ def new_conversation(req: CreateConvRequest):
 @app.get("/api/documents")
 def get_documents():
     """List every indexed document."""
-    return list_documents()
+    documents = list_documents()
+    for document in documents:
+        storage_name = document.get("storage_name") or document["filename"]
+        document["source_id"] = (
+            document["filename"] if storage_name == document["filename"] else document["id"]
+        )
+    return documents
 
 
 @app.delete("/api/documents/{doc_id}")
@@ -255,16 +383,30 @@ def remove_document(doc_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
+    storage_name = doc.get("storage_name") or doc["filename"]
+    file_path = os.path.join(UPLOAD_DIR, storage_name)
+    quarantine_path = os.path.join(QUARANTINE_DIR, f"{doc_id}.pdf.deleting")
+    vectors_deleted = False
     try:
-        delete_document_vectors(doc["filename"])
+        update_document_status(doc_id, "deleting")
+        if os.path.exists(file_path):
+            os.replace(file_path, quarantine_path)
+        vector_key = doc["filename"] if storage_name == doc["filename"] else doc_id
+        delete_document_vectors(vector_key)
+        vectors_deleted = True
+        delete_document_record(doc_id)
+        Path(quarantine_path).unlink(missing_ok=True)
     except Exception as e:
-        logger.exception("Failed to delete vectors")
-        raise HTTPException(status_code=500, detail=f"Could not delete vectors: {e}")
-
-    delete_document_record(doc_id)
-
-    file_path = os.path.join(UPLOAD_DIR, doc["filename"])
-    if os.path.exists(file_path):
-        os.remove(file_path)
+        logger.exception("Document deletion failed")
+        if not vectors_deleted and os.path.exists(quarantine_path):
+            os.replace(quarantine_path, file_path)
+        try:
+            update_document_status(doc_id, "deletion_failed", str(e))
+        except Exception:
+            logger.exception("Could not mark deletion failure for %s", doc_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Document deletion did not finish. Its state was preserved for retry.",
+        ) from e
 
     return {"status": "deleted", "id": doc_id}

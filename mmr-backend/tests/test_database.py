@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,8 +10,8 @@ from app import database
 class DatabaseTests(unittest.TestCase):
     def setUp(self):
         self._temporary_directory = tempfile.TemporaryDirectory()
-        database_path = Path(self._temporary_directory.name) / "test_history.db"
-        self._database_path_patch = patch.object(database, "DB_PATH", str(database_path))
+        self.database_path = Path(self._temporary_directory.name) / "test_history.db"
+        self._database_path_patch = patch.object(database, "DB_PATH", str(self.database_path))
         self._database_path_patch.start()
         database.init_db()
 
@@ -36,18 +37,42 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(conversations[0]["messages"][0]["content"], "Updated answer")
         self.assertEqual(conversations[0]["messages"][0]["sources"], sources)
 
-    def test_document_registry_is_idempotent_and_deletable(self):
+    def test_document_registry_allows_duplicate_display_names_and_deletion(self):
         first = database.add_document("report.pdf")
         second = database.add_document("report.pdf")
 
-        self.assertEqual(first["id"], second["id"])
+        self.assertNotEqual(first["id"], second["id"])
         self.assertEqual(database.get_document(first["id"])["filename"], "report.pdf")
-        self.assertEqual(len(database.list_documents()), 1)
+        self.assertEqual(len(database.list_documents()), 2)
 
         database.delete_document_record(first["id"])
 
         self.assertIsNone(database.get_document(first["id"]))
-        self.assertEqual(database.list_documents(), [])
+        self.assertEqual(len(database.list_documents()), 1)
+
+    def test_legacy_unique_filename_registry_is_migrated(self):
+        with sqlite3.connect(self.database_path) as conn:
+            conn.execute("DROP TABLE documents")
+            conn.execute("""
+                CREATE TABLE documents (
+                    id TEXT PRIMARY KEY,
+                    filename TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute(
+                "INSERT INTO documents (id, filename) VALUES (?, ?)",
+                ("legacy-id", "report.pdf"),
+            )
+            conn.commit()
+
+        database.init_db()
+        duplicate = database.add_document("report.pdf")
+
+        documents = database.list_documents()
+        self.assertEqual(len(documents), 2)
+        self.assertNotEqual(duplicate["id"], "legacy-id")
+        self.assertEqual(database.get_document("legacy-id")["storage_name"], "report.pdf")
 
 
 if __name__ == "__main__":

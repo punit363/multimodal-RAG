@@ -15,7 +15,7 @@ Browser (Next.js)
                                                `-- SQLite: documents and conversations
 ```
 
-The workspace contains two independent Git repositories:
+The root repository contains two application services:
 
 - `mmr-frontend`: Next.js, React, TypeScript, and Tailwind CSS.
 - `mmr-backend`: FastAPI, LangChain, Unstructured, Chroma, and SQLite.
@@ -49,10 +49,13 @@ The API health endpoint is available at `http://localhost:8000/` and interactive
 ```bash
 cd mmr-frontend
 npm ci
+cp .env.example .env.local
 npm run dev
 ```
 
 Open `http://localhost:3000`.
+
+`NEXT_PUBLIC_API_BASE_URL` is validated during the frontend build and defaults to `http://localhost:8000`. Set it in `mmr-frontend/.env.local` for a different backend origin.
 
 For a guided product walkthrough with screenshots, see [docs/DEMO.md](docs/DEMO.md).
 
@@ -68,6 +71,12 @@ If port 3000 is already in use, choose an alternate frontend host port without c
 
 ```bash
 FRONTEND_PORT=3001 docker compose up --build
+```
+
+Set `NEXT_PUBLIC_API_BASE_URL` before the build when the browser must reach the backend at another public origin:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=https://rag-api.example.com docker compose up --build
 ```
 
 The Compose setup persists uploaded files, the SQLite database, and the Chroma index in named volumes.
@@ -87,13 +96,21 @@ npm run build
 npm run test:e2e
 ```
 
-The current stabilization plan and remaining tasks are tracked in [CODEX.md](CODEX.md).
+The completed Phase 1 stabilization record and validation results are tracked in [CODEX.md](CODEX.md).
 
 ## Current limitations
 
 - Only PDF uploads are supported.
-- The frontend currently targets a backend on `http://localhost:8000`.
 - Authentication and workspace isolation are not implemented.
 - Ingestion runs within the API process and is intended for local MVP use.
 - Page-level citations and retrieval-quality evaluation are planned for a later phase.
+
+## Runtime safety behavior
+
+- Uploads are checked for PDF extension, MIME type, signature, size, readability, encryption, and page count before ingestion.
+- Stored files use generated document IDs, so duplicate display filenames cannot overwrite each other.
+- Extracted table HTML is sanitized before indexing and again before retrieval.
+- Failed or cancelled ingestion removes partial vectors, files, and registry data; cleanup failures are quarantined and recorded.
+- Deletion uses a retryable lifecycle state so cross-store failures remain visible and recoverable.
+- The UI applies request timeouts and exposes retry and cancellation controls for uploads and streamed answers.
 

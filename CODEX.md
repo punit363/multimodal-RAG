@@ -2,17 +2,19 @@
 
 Phase 1 stabilizes the existing MVP before retrieval and product features are expanded. Work is divided by impact on correctness and user safety.
 
+**Status:** Complete — October 16, 2026
+
 ## Part A — High priority: runtime reliability and safety
 
 - [x] Fix all frontend lint errors and warnings that affect correctness.
-- [ ] Move the frontend API base URL to validated environment configuration.
-- [ ] Validate uploaded files by MIME type, PDF signature, size, and page count.
-- [ ] Store uploads with generated document IDs so equal filenames cannot overwrite each other.
-- [ ] Sanitize extracted table HTML before it is returned to or rendered by the frontend.
-- [ ] Make ingestion and chat failures visible in the UI with retry actions.
-- [ ] Add request timeouts and support cancelling uploads and streamed answers.
-- [ ] Keep document, vector-store, and file deletion consistent when one operation fails.
-- [ ] Remove or quarantine partially ingested data after a failed ingestion.
+- [x] Move the frontend API base URL to validated environment configuration.
+- [x] Validate uploaded files by MIME type, PDF signature, size, and page count.
+- [x] Store uploads with generated document IDs so equal filenames cannot overwrite each other.
+- [x] Sanitize extracted table HTML before it is returned to or rendered by the frontend.
+- [x] Make ingestion and chat failures visible in the UI with retry actions.
+- [x] Add request timeouts and support cancelling uploads and streamed answers.
+- [x] Keep document, vector-store, and file deletion consistent when one operation fails.
+- [x] Remove or quarantine partially ingested data after a failed ingestion.
 
 ### Completion criteria
 
@@ -40,14 +42,15 @@ Phase 1 stabilizes the existing MVP before retrieval and product features are ex
 - Tests never read or modify the developer's local databases or uploaded documents.
 - Pull requests automatically run lint, build, and test checks once CI is added.
 
-### Validation note
+## Final validation
 
-The Compose configuration, both Dockerfiles, and a full image build pass validation. The backend container reached healthy status and returned its expected health response; the frontend returned HTTP 200. Host port 3000 was already occupied during the final smoke test, so the configurable `FRONTEND_PORT` mapping was verified on port 3001.
+- Backend: 13 tests passed, covering API behavior, upload validation, duplicate filenames, failure cleanup, deletion recovery, sanitization, and database migration.
+- Frontend: 3 component tests and 2 Chromium end-to-end tests passed.
+- Quality: frontend lint, production build, TypeScript checks, Python compilation, and `git diff --check` passed.
+- Packaging: both Docker images rebuilt successfully; the backend reported healthy and returned its expected health response, while the frontend returned HTTP 200.
+- Environment: host port 3000 was occupied, so the configurable `FRONTEND_PORT` mapping was verified on port 3001.
 
-## Recommended order
+## Phase handoff
 
-1. Finish the high-priority runtime work.
-2. Add API integration coverage around the stabilized behavior.
-3. Add frontend and end-to-end coverage.
-4. Add CI and capture the final demo workflow.
+Phase 1 is complete. Phase 2 can build on this stable baseline with stronger retrieval quality, grounded citations, evaluation datasets, and retrieval observability.
 

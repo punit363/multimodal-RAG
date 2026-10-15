@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { IngestionStepper } from "@/components/IngestionStepper";
 import { SourceCitationCard } from "@/components/SourceCitationCard";
 import { RetrievedChunk } from "@/types/rag";
+import { API_BASE_URL, fetchWithTimeout } from "@/lib/api";
 import {
   Plus,
   Folder,
@@ -20,10 +21,10 @@ import {
   Bot,
   Trash2,
   Loader2,
+  RotateCcw,
+  XCircle,
 } from "lucide-react";
 import { CitationLightbox, LightboxData } from "@/components/CitationLightbox";
-
-const API_BASE_URL = "http://localhost:8000";
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -45,12 +46,18 @@ interface Conversation {
 interface DocumentItem {
   id: string;
   filename: string;
+  source_id?: string;
+  status?: "processing" | "ready" | "failed" | "deleting" | "deletion_failed";
+  error?: string;
   created_at?: string;
 }
 
 export default function ChatWorkspace() {
   const [ingestStep, setIngestStep] = useState<number>(0);
   const [ingestError, setIngestError] = useState<string>("");
+  const [isIngesting, setIsIngesting] = useState(false);
+  const [lastIngestFile, setLastIngestFile] = useState<File | null>(null);
+  const ingestControllerRef = useRef<AbortController | null>(null);
 
   // Knowledge base
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -62,13 +69,19 @@ export default function ChatWorkspace() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [lastFailedQuery, setLastFailedQuery] = useState("");
+  const chatControllerRef = useRef<AbortController | null>(null);
+  const [workspaceError, setWorkspaceError] = useState("");
+  const [failedDelete, setFailedDelete] = useState<DocumentItem | null>(null);
 
   const [activeLightbox, setActiveLightbox] = useState<LightboxData | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
+  const readyDocuments = documents.filter((doc) => !doc.status || doc.status === "ready");
 
-  const noSourceSelected = documents.length > 0 && selectedDocIds.size === 0;
+  const noSourceSelected = readyDocuments.length === 0 || selectedDocIds.size === 0;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -76,14 +89,16 @@ export default function ChatWorkspace() {
 
   const fetchConversations = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/conversations`);
+      const res = await fetchWithTimeout(`${API_BASE_URL}/api/conversations`);
       if (res.ok) {
         const data: Conversation[] = await res.json();
         setConversations(data);
         setActiveConversationId((current) => current ?? data[0]?.id ?? null);
+      } else {
+        throw new Error(`Could not load conversations (${res.status}).`);
       }
-    } catch (err) {
-      console.error("Failed to load conversations:", err);
+    } catch (err: unknown) {
+      setWorkspaceError(getErrorMessage(err, "Could not load conversations."));
     }
   }, []);
 
@@ -91,14 +106,18 @@ export default function ChatWorkspace() {
   // documents that no longer exist are dropped from the selection.
   const fetchDocuments = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/documents`);
-      if (!res.ok) return;
+      const res = await fetchWithTimeout(`${API_BASE_URL}/api/documents`);
+      if (!res.ok) throw new Error(`Could not load documents (${res.status}).`);
       const data: DocumentItem[] = await res.json();
 
       const newIds = data
-        .filter((d) => !knownDocIdsRef.current.has(d.id))
+        .filter(
+          (d) => (!d.status || d.status === "ready") && !knownDocIdsRef.current.has(d.id)
+        )
         .map((d) => d.id);
-      const currentIds = new Set(data.map((d) => d.id));
+      const currentIds = new Set(
+        data.filter((d) => !d.status || d.status === "ready").map((d) => d.id)
+      );
       knownDocIdsRef.current = currentIds;
 
       setDocuments(data);
@@ -108,8 +127,8 @@ export default function ChatWorkspace() {
         newIds.forEach((id) => next.add(id));
         return next;
       });
-    } catch (err) {
-      console.error("Failed to load documents:", err);
+    } catch (err: unknown) {
+      setWorkspaceError(getErrorMessage(err, "Could not load documents."));
     }
   }, []);
 
@@ -133,7 +152,9 @@ export default function ChatWorkspace() {
 
   const toggleAllDocuments = () => {
     setSelectedDocIds((prev) =>
-      prev.size === documents.length ? new Set() : new Set(documents.map((d) => d.id))
+      prev.size === readyDocuments.length
+        ? new Set()
+        : new Set(readyDocuments.map((d) => d.id))
     );
   };
 
@@ -142,15 +163,20 @@ export default function ChatWorkspace() {
       return;
     }
     setDeletingDocId(doc.id);
+    setWorkspaceError("");
+    setFailedDelete(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/documents/${doc.id}`, {
+      const res = await fetchWithTimeout(`${API_BASE_URL}/api/documents/${doc.id}`, {
         method: "DELETE",
       });
-      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        throw new Error(detail?.detail || `Delete failed (${res.status})`);
+      }
       await fetchDocuments();
-    } catch (err) {
-      console.error("Failed to delete document:", err);
-      window.alert("Could not delete the document. Check the backend logs.");
+    } catch (err: unknown) {
+      setWorkspaceError(getErrorMessage(err, "Could not delete the document."));
+      setFailedDelete(doc);
     } finally {
       setDeletingDocId(null);
     }
@@ -158,16 +184,38 @@ export default function ChatWorkspace() {
 
   // Document Upload Stream Handler
   const handleIngestStream = async (selectedFile: File) => {
+    if (selectedFile.type !== "application/pdf" || !selectedFile.name.toLowerCase().endsWith(".pdf")) {
+      setIngestStep(1);
+      setIngestError("Choose a PDF file with the application/pdf MIME type.");
+      setLastIngestFile(selectedFile);
+      return;
+    }
+    if (selectedFile.size > 25 * 1024 * 1024) {
+      setIngestStep(1);
+      setIngestError("PDF exceeds the 25 MB upload limit.");
+      setLastIngestFile(selectedFile);
+      return;
+    }
+
     setIngestStep(1);
     setIngestError("");
+    setLastIngestFile(selectedFile);
+    setIsIngesting(true);
 
     const formData = new FormData();
     formData.append("file", selectedFile);
+    const controller = new AbortController();
+    ingestControllerRef.current = controller;
+    const timeout = window.setTimeout(
+      () => controller.abort(new Error("Ingestion timed out.")),
+      5 * 60 * 1000
+    );
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/ingest-stream`, {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -196,11 +244,12 @@ export default function ChatWorkspace() {
             if (data.status === "error") {
               setIngestError(data.label);
               failed = true;
+              await reader.cancel();
               break;
             }
             setIngestStep(data.step);
             if (data.status === "completed") {
-              // Pull the persisted list so the new doc shows up (and is selected)
+              setLastIngestFile(null);
               await fetchDocuments();
             }
           } catch (err) {
@@ -209,64 +258,82 @@ export default function ChatWorkspace() {
         }
       }
     } catch (err: unknown) {
-      setIngestError(getErrorMessage(err, "Failed to process document."));
+      setIngestError(
+        controller.signal.aborted
+          ? "Ingestion was cancelled or timed out. You can retry safely."
+          : getErrorMessage(err, "Failed to process document.")
+      );
+    } finally {
+      window.clearTimeout(timeout);
+      if (ingestControllerRef.current === controller) ingestControllerRef.current = null;
+      setIsIngesting(false);
     }
+  };
+
+  const cancelIngestion = () => {
+    ingestControllerRef.current?.abort(new Error("Cancelled by user."));
   };
 
   // Create new conversation on server
   const startNewConversation = async () => {
+    setWorkspaceError("");
     try {
-      const res = await fetch(`${API_BASE_URL}/api/conversations`, {
+      const res = await fetchWithTimeout(`${API_BASE_URL}/api/conversations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: `Conversation ${conversations.length + 1}` }),
       });
-      if (res.ok) {
-        const newConv: Conversation = await res.json();
-        setConversations((prev) => [newConv, ...prev]);
-        setActiveConversationId(newConv.id);
-        setQuery("");
-      }
-    } catch (err) {
-      console.error("Failed to create conversation:", err);
+      if (!res.ok) throw new Error(`Could not create conversation (${res.status}).`);
+      const newConv: Conversation = await res.json();
+      setConversations((prev) => [newConv, ...prev]);
+      setActiveConversationId(newConv.id);
+      setQuery("");
+    } catch (err: unknown) {
+      setWorkspaceError(getErrorMessage(err, "Could not create conversation."));
     }
   };
 
-  // Search Query Handler
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim() || isSearching || noSourceSelected) return;
+  const runSearch = async (currentQuery: string) => {
+    if (!currentQuery.trim() || isSearching || noSourceSelected) return;
+    setChatError("");
+    setLastFailedQuery(currentQuery);
 
     let convId = activeConversationId;
 
     // Ensure conversation exists in SQLite before starting message stream
     if (!convId) {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/conversations`, {
+        const res = await fetchWithTimeout(`${API_BASE_URL}/api/conversations`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: query.slice(0, 20) }),
+          body: JSON.stringify({ title: currentQuery.slice(0, 20) }),
         });
+        if (!res.ok) throw new Error(`Could not create conversation (${res.status}).`);
         const newConv: Conversation = await res.json();
         convId = newConv.id;
         setConversations((prev) => [newConv, ...prev]);
         setActiveConversationId(convId);
-      } catch (err) {
-        console.error("Failed to auto-create conversation in SQLite:", err);
+      } catch (err: unknown) {
+        setChatError(getErrorMessage(err, "Could not create a conversation."));
         return;
       }
     }
 
-    const currentQuery = query;
-    const selectedFilenames = documents
-      .filter((d) => selectedDocIds.has(d.id))
-      .map((d) => d.filename);
+    const selectedDocumentIds = documents
+      .filter((d) => (!d.status || d.status === "ready") && selectedDocIds.has(d.id))
+      .map((d) => d.source_id || d.id);
 
     setQuery("");
     setIsSearching(true);
 
     const userMessageId = `usr-${crypto.randomUUID()}`;
     const assistantMessageId = `ast-${crypto.randomUUID()}`;
+    const controller = new AbortController();
+    chatControllerRef.current = controller;
+    const timeout = window.setTimeout(
+      () => controller.abort(new Error("Answer generation timed out.")),
+      2 * 60 * 1000
+    );
 
     // Optimistically update local React UI state
     setConversations((prev) =>
@@ -295,11 +362,16 @@ export default function ChatWorkspace() {
           user_message_id: userMessageId,
           assistant_message_id: assistantMessageId,
           top_k: 3,
-          sources: selectedFilenames,
+          sources: selectedDocumentIds,
         }),
+        signal: controller.signal,
       });
 
-      if (!response.ok || !response.body) throw new Error("Stream connection failed");
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        throw new Error(detail?.detail || `Stream connection failed (${response.status}).`);
+      }
+      if (!response.body) throw new Error("The answer stream did not return a response body.");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -315,46 +387,80 @@ export default function ChatWorkspace() {
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
+            let data: { type?: string; sources?: RetrievedChunk[]; token?: string; message?: string };
             try {
-              const data = JSON.parse(line.replace("data: ", ""));
-              if (data.type === "sources") {
-                setConversations((prev) =>
-                  prev.map((c) =>
-                    c.id === convId
-                      ? {
-                          ...c,
-                          messages: c.messages.map((m) =>
-                            m.id === assistantMessageId ? { ...m, sources: data.sources } : m
-                          ),
-                        }
-                      : c
-                  )
-                );
-              } else if (data.type === "token") {
-                setConversations((prev) =>
-                  prev.map((c) =>
-                    c.id === convId
-                      ? {
-                          ...c,
-                          messages: c.messages.map((m) =>
-                            m.id === assistantMessageId ? { ...m, content: m.content + data.token } : m
-                          ),
-                        }
-                      : c
-                  )
-                );
-              }
+              data = JSON.parse(line.replace("data: ", ""));
             } catch (err) {
               console.error("Error parsing SSE packet:", err);
+              continue;
+            }
+            if (data.type === "sources") {
+                setConversations((prev) =>
+                  prev.map((c) =>
+                    c.id === convId
+                      ? {
+                          ...c,
+                          messages: c.messages.map((m) =>
+                            m.id === assistantMessageId ? { ...m, sources: data.sources || [] } : m
+                          ),
+                        }
+                      : c
+                  )
+                );
+            } else if (data.type === "token") {
+                setConversations((prev) =>
+                  prev.map((c) =>
+                    c.id === convId
+                      ? {
+                          ...c,
+                          messages: c.messages.map((m) =>
+                            m.id === assistantMessageId
+                              ? { ...m, content: m.content + (data.token || "") }
+                              : m
+                          ),
+                        }
+                      : c
+                  )
+                );
+            } else if (data.type === "error") {
+              throw new Error(data.message || "Answer generation failed.");
             }
           }
         }
       }
     } catch (err: unknown) {
-      console.error("Stream error:", err);
+      const message = controller.signal.aborted
+        ? "Answer generation was cancelled or timed out."
+        : getErrorMessage(err, "Answer generation failed.");
+      setChatError(message);
+      setConversations((prev) =>
+        prev.map((conversation) =>
+          conversation.id === convId
+            ? {
+                ...conversation,
+                messages: conversation.messages.map((messageItem) =>
+                  messageItem.id === assistantMessageId && !messageItem.content
+                    ? { ...messageItem, content: message }
+                    : messageItem
+                ),
+              }
+            : conversation
+        )
+      );
     } finally {
+      window.clearTimeout(timeout);
+      if (chatControllerRef.current === controller) chatControllerRef.current = null;
       setIsSearching(false);
     }
+  };
+
+  const handleSearch = (event: React.FormEvent) => {
+    event.preventDefault();
+    void runSearch(query);
+  };
+
+  const cancelChat = () => {
+    chatControllerRef.current?.abort(new Error("Cancelled by user."));
   };
 
   return (
@@ -421,6 +527,35 @@ export default function ChatWorkspace() {
             <Plus size={14} /> New conversation
           </button>
         </header>
+
+        {workspaceError && (
+          <div className="mx-6 mt-4 flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500">
+            <span className="flex items-center gap-2"><XCircle size={14} /> {workspaceError}</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  failedDelete
+                    ? void handleDeleteDocument(failedDelete)
+                    : void Promise.all([fetchConversations(), fetchDocuments()])
+                }
+                className="inline-flex items-center gap-1 font-semibold hover:underline"
+              >
+                <RotateCcw size={12} /> Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceError("");
+                  setFailedDelete(null);
+                }}
+                aria-label="Dismiss error"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Chat Messages Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -498,6 +633,19 @@ export default function ChatWorkspace() {
 
         {/* Input Form */}
         <div className="p-4 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-[#0D0D0D]">
+          {chatError && (
+            <div className="max-w-3xl mx-auto mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500">
+              <span>{chatError}</span>
+              <button
+                type="button"
+                onClick={() => void runSearch(lastFailedQuery)}
+                disabled={isSearching || !lastFailedQuery}
+                className="inline-flex items-center gap-1 font-semibold hover:underline disabled:opacity-50"
+              >
+                <RotateCcw size={12} /> Retry answer
+              </button>
+            </div>
+          )}
           <form onSubmit={handleSearch} className="max-w-3xl mx-auto flex gap-2">
             <input
               type="text"
@@ -518,6 +666,15 @@ export default function ChatWorkspace() {
             >
               {isSearching ? "Thinking..." : <Send size={14} />}
             </button>
+            {isSearching && (
+              <button
+                type="button"
+                onClick={cancelChat}
+                className="px-3 py-2.5 rounded-lg border border-red-500/40 text-red-500 text-xs hover:bg-red-500/10"
+              >
+                Cancel
+              </button>
+            )}
           </form>
         </div>
       </main>
@@ -533,13 +690,14 @@ export default function ChatWorkspace() {
 
         <div className="space-y-2">
           <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">Add Sources</span>
-          <label className="border-2 border-dashed border-neutral-300 dark:border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-50 dark:bg-neutral-950/40 cursor-pointer transition-all">
+          <label className={`border-2 border-dashed border-neutral-300 dark:border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-50 dark:bg-neutral-950/40 transition-all ${isIngesting ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}>
             <UploadCloud size={20} className="text-neutral-500" />
             <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Drop files or click to upload</span>
             <span className="text-[10px] text-neutral-500">PDF documents supported</span>
             <input
               type="file"
               accept=".pdf"
+              disabled={isIngesting}
               className="hidden"
               onChange={(e) => {
                 const selected = e.target.files?.[0];
@@ -553,7 +711,15 @@ export default function ChatWorkspace() {
           </label>
         </div>
 
-        {ingestStep > 0 && <IngestionStepper currentStep={ingestStep} errorMsg={ingestError} />}
+        {ingestStep > 0 && (
+          <IngestionStepper
+            currentStep={ingestStep}
+            errorMsg={ingestError}
+            isRunning={isIngesting}
+            onCancel={cancelIngestion}
+            onRetry={lastIngestFile ? () => void handleIngestStream(lastIngestFile) : undefined}
+          />
+        )}
 
         <div className="flex-1 overflow-y-auto space-y-2 pt-2 border-t border-neutral-200 dark:border-neutral-800">
           <div className="flex items-center justify-between">
@@ -565,7 +731,7 @@ export default function ChatWorkspace() {
                 onClick={toggleAllDocuments}
                 className="text-[10px] font-medium text-[#D4AF37] hover:underline cursor-pointer"
               >
-                {selectedDocIds.size === documents.length ? "Deselect all" : "Select all"}
+                {selectedDocIds.size === readyDocuments.length ? "Deselect all" : "Select all"}
               </button>
             )}
           </div>
@@ -589,7 +755,7 @@ export default function ChatWorkspace() {
                     type="checkbox"
                     checked={isSelected}
                     onChange={() => toggleDocument(doc.id)}
-                    disabled={isDeleting}
+                    disabled={isDeleting || (!!doc.status && doc.status !== "ready")}
                     className="accent-[#D4AF37] cursor-pointer shrink-0"
                     aria-label={`Use ${doc.filename} as a source`}
                   />
@@ -597,6 +763,11 @@ export default function ChatWorkspace() {
                   <span className="truncate flex-1" title={doc.filename}>
                     {doc.filename}
                   </span>
+                  {doc.status && doc.status !== "ready" && (
+                    <span className="text-[9px] text-amber-500" title={doc.error || doc.status}>
+                      {doc.status.replace("_", " ")}
+                    </span>
+                  )}
                   <button
                     onClick={() => handleDeleteDocument(doc)}
                     disabled={isDeleting}

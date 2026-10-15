@@ -47,10 +47,45 @@ def init_db() -> None:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY,
-                filename TEXT NOT NULL UNIQUE,
+                filename TEXT NOT NULL,
+                storage_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'ready',
+                error TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        document_columns = {
+            row[1] for row in cursor.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        if "storage_name" not in document_columns:
+            cursor.execute("ALTER TABLE documents ADD COLUMN storage_name TEXT")
+            cursor.execute("UPDATE documents SET storage_name = filename WHERE storage_name IS NULL")
+        if "status" not in document_columns:
+            cursor.execute("ALTER TABLE documents ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'")
+        if "error" not in document_columns:
+            cursor.execute("ALTER TABLE documents ADD COLUMN error TEXT")
+        document_schema = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
+        ).fetchone()[0]
+        if "FILENAME TEXT NOT NULL UNIQUE" in document_schema.upper():
+            cursor.execute("ALTER TABLE documents RENAME TO documents_legacy")
+            cursor.execute("""
+                CREATE TABLE documents (
+                    id TEXT PRIMARY KEY,
+                    filename TEXT NOT NULL,
+                    storage_name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'ready',
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO documents (id, filename, storage_name, status, error, created_at)
+                SELECT id, filename, COALESCE(storage_name, filename),
+                       COALESCE(status, 'ready'), error, created_at
+                FROM documents_legacy
+            """)
+            cursor.execute("DROP TABLE documents_legacy")
         conn.commit()
     logger.info("SQLite database initialized successfully.")
 
@@ -165,19 +200,37 @@ def update_message_content(
 # Documents (the knowledge-base registry shown in the UI)
 # ---------------------------------------------------------------------------
 
-def add_document(filename: str) -> Dict[str, Any]:
-    """Register an indexed document. Re-uploading the same filename keeps its id."""
+def add_document(
+    filename: str,
+    *,
+    doc_id: Optional[str] = None,
+    storage_name: Optional[str] = None,
+    status: str = "ready",
+) -> Dict[str, Any]:
+    """Register a document using an immutable id and collision-safe storage name."""
+    document_id = doc_id or str(uuid.uuid4())
+    stored_name = storage_name or filename
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         conn.execute(
-            "INSERT OR IGNORE INTO documents (id, filename) VALUES (?, ?)",
-            (str(uuid.uuid4()), filename),
+            """
+            INSERT INTO documents (id, filename, storage_name, status)
+            VALUES (?, ?, ?, ?)
+            """,
+            (document_id, filename, stored_name, status),
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT * FROM documents WHERE filename = ?", (filename,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
     return dict(row)
+
+
+def update_document_status(doc_id: str, status: str, error: Optional[str] = None) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE documents SET status = ?, error = ? WHERE id = ?",
+            (status, error, doc_id),
+        )
+        conn.commit()
 
 
 def list_documents() -> List[Dict[str, Any]]:
