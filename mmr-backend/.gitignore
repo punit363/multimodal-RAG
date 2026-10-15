@@ -1,0 +1,6 @@
+.env
+venv
+app/__pycache__
+db
+docs
+rag_history.*
