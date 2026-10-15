@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { FileText, CheckSquare, Square, Trash2, Database } from "lucide-react";
+import { FileText, CheckSquare, Square, Trash2 } from "lucide-react";
 
 export interface DocumentInfo {
   filename: string;

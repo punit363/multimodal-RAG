@@ -5,7 +5,7 @@ services:
     env_file:
       - ./mmr-backend/.env
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - backend-docs:/app/docs
       - backend-db:/app/db
@@ -23,7 +23,7 @@ services:
     build:
       context: ./mmr-frontend
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       backend:
         condition: service_healthy

@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect } from "react";
-import { X, ZoomIn, FileText, Image as ImageIcon, Table as TableIcon } from "lucide-react";
+import Image from "next/image";
+import { X, ZoomIn, Image as ImageIcon, Table as TableIcon } from "lucide-react";
 
 export interface LightboxData {
   type: "image" | "table";
@@ -63,9 +64,12 @@ export function CitationLightbox({ data, onClose }: CitationLightboxProps) {
         <div className="flex-1 overflow-auto p-6 flex items-center justify-center bg-[#0A0A0A]">
           {data.type === "image" ? (
             <div className="relative max-w-full max-h-[70vh] flex items-center justify-center overflow-auto rounded-lg border border-neutral-800 bg-neutral-950 p-2">
-              <img
+              <Image
                 src={`data:image/jpeg;base64,${data.content}`}
                 alt={`Extracted figure from chunk ${data.chunkId}`}
+                width={1200}
+                height={900}
+                unoptimized
                 className="max-w-full max-h-[65vh] object-contain rounded"
               />
             </div>

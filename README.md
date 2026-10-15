@@ -54,6 +54,8 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+For a guided product walkthrough with screenshots, see [docs/DEMO.md](docs/DEMO.md).
+
 ## Run with Docker Compose
 
 Create `mmr-backend/.env` from the example file, add your API key, then run:
@@ -62,7 +64,15 @@ Create `mmr-backend/.env` from the example file, add your API key, then run:
 docker compose up --build
 ```
 
+If port 3000 is already in use, choose an alternate frontend host port without changing the container configuration:
+
+```bash
+FRONTEND_PORT=3001 docker compose up --build
+```
+
 The Compose setup persists uploaded files, the SQLite database, and the Chroma index in named volumes.
+
+The backend image includes OCR and document-inference dependencies. Keep several gigabytes of free Docker storage available for the first build.
 
 ## Validation
 
@@ -72,7 +82,9 @@ python -m unittest discover -s tests -v
 
 cd ../mmr-frontend
 npm run lint
+npm test
 npm run build
+npm run test:e2e
 ```
 
 The current stabilization plan and remaining tasks are tracked in [CODEX.md](CODEX.md).

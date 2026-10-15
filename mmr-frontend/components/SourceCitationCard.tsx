@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Image from "next/image";
 import { RetrievedChunk } from "@/types/rag";
 import { LightboxData } from "@/components/CitationLightbox";
 import { Maximize2, Table as TableIcon, Image as ImageIcon } from "lucide-react";
@@ -92,9 +93,12 @@ export function SourceCitationCard({ chunk, onOpenLightbox }: SourceCitationCard
                 }
                 className="group relative cursor-pointer overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950 p-1 hover:border-[#D4AF37]/50 transition-all flex items-center justify-center max-h-32"
               >
-                <img
+                <Image
                   src={`data:image/jpeg;base64,${imgBase64}`}
                   alt={`Extracted element ${idx + 1}`}
+                  width={640}
+                  height={480}
+                  unoptimized
                   className="max-h-28 w-auto object-contain rounded"
                 />
                 <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">

@@ -4,7 +4,7 @@ Phase 1 stabilizes the existing MVP before retrieval and product features are ex
 
 ## Part A — High priority: runtime reliability and safety
 
-- [ ] Fix all frontend lint errors and warnings that affect correctness.
+- [x] Fix all frontend lint errors and warnings that affect correctness.
 - [ ] Move the frontend API base URL to validated environment configuration.
 - [ ] Validate uploaded files by MIME type, PDF signature, size, and page count.
 - [ ] Store uploads with generated document IDs so equal filenames cannot overwrite each other.
@@ -28,10 +28,10 @@ Phase 1 stabilizes the existing MVP before retrieval and product features are ex
 - [x] Add a safe backend example environment file without real credentials.
 - [x] Add Dockerfiles and a Compose configuration for running both services.
 - [x] Add a focused backend database test suite using an isolated temporary database.
-- [ ] Add API integration tests for conversations, documents, ingestion validation, and retrieval filters.
-- [ ] Add frontend component and end-to-end tests for upload, source selection, streaming, and failures.
-- [ ] Add continuous integration for lint, build, and tests.
-- [ ] Add screenshots and a short demo workflow to the documentation.
+- [x] Add API integration tests for conversations, documents, ingestion validation, and retrieval filters.
+- [x] Add frontend component and end-to-end tests for source selection, streaming, citations, and ingestion progress states.
+- [x] Add continuous integration for lint, build, and tests.
+- [x] Add screenshots and a short demo workflow to the documentation.
 
 ### Completion criteria
 
@@ -39,6 +39,10 @@ Phase 1 stabilizes the existing MVP before retrieval and product features are ex
 - `docker compose up --build` starts the frontend and backend.
 - Tests never read or modify the developer's local databases or uploaded documents.
 - Pull requests automatically run lint, build, and test checks once CI is added.
+
+### Validation note
+
+The Compose configuration, both Dockerfiles, and a full image build pass validation. The backend container reached healthy status and returned its expected health response; the frontend returned HTTP 200. Host port 3000 was already occupied during the final smoke test, so the configurable `FRONTEND_PORT` mapping was verified on port 3001.
 
 ## Recommended order
 

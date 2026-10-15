@@ -8,14 +8,17 @@ __pycache__/
 .venv/
 venv/
 rag_history.db*
-db/
-docs/
+mmr-backend/db/
+mmr-backend/docs/
 
 # Node / Next.js
 node_modules/
 .next/
 out/
 npm-debug.log*
+coverage/
+playwright-report/
+test-results/
 
 # OS/editor files
 .DS_Store

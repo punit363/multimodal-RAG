@@ -1,7 +1,7 @@
 // app/chat/page.tsx
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { IngestionStepper } from "@/components/IngestionStepper";
@@ -24,6 +24,10 @@ import {
 import { CitationLightbox, LightboxData } from "@/components/CitationLightbox";
 
 const API_BASE_URL = "http://localhost:8000";
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
 
 interface ChatMessage {
   id: string;
@@ -66,34 +70,26 @@ export default function ChatWorkspace() {
 
   const noSourceSelected = documents.length > 0 && selectedDocIds.size === 0;
 
-  // Initial load: conversations + documents from the backend
-  useEffect(() => {
-    fetchConversations();
-    fetchDocuments();
-  }, []);
-
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeConversation?.messages]);
 
-  const fetchConversations = async () => {
+  const fetchConversations = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/conversations`);
       if (res.ok) {
         const data: Conversation[] = await res.json();
         setConversations(data);
-        if (data.length > 0 && !activeConversationId) {
-          setActiveConversationId(data[0].id);
-        }
+        setActiveConversationId((current) => current ?? data[0]?.id ?? null);
       }
     } catch (err) {
       console.error("Failed to load conversations:", err);
     }
-  };
+  }, []);
 
   // Load the document list. Newly seen documents are selected automatically;
   // documents that no longer exist are dropped from the selection.
-  const fetchDocuments = async () => {
+  const fetchDocuments = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/documents`);
       if (!res.ok) return;
@@ -115,7 +111,16 @@ export default function ChatWorkspace() {
     } catch (err) {
       console.error("Failed to load documents:", err);
     }
-  };
+  }, []);
+
+  // Initial load: conversations + documents from the backend
+  useEffect(() => {
+    const loadTimer = window.setTimeout(() => {
+      void Promise.all([fetchConversations(), fetchDocuments()]);
+    }, 0);
+
+    return () => window.clearTimeout(loadTimer);
+  }, [fetchConversations, fetchDocuments]);
 
   const toggleDocument = (id: string) => {
     setSelectedDocIds((prev) => {
@@ -203,8 +208,8 @@ export default function ChatWorkspace() {
           }
         }
       }
-    } catch (err: any) {
-      setIngestError(err.message || "Failed to process document.");
+    } catch (err: unknown) {
+      setIngestError(getErrorMessage(err, "Failed to process document."));
     }
   };
 
@@ -345,7 +350,7 @@ export default function ChatWorkspace() {
           }
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Stream error:", err);
     } finally {
       setIsSearching(false);
