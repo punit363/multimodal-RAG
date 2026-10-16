@@ -56,19 +56,21 @@ Phase 1 is complete. Phase 2 can build on this stable baseline with stronger ret
 
 ## Phase 2 — Answer Grounding and Citations
 
-**Status:** In progress — High and Medium priorities complete October 16, 2026; Low remains planned.
+**Status:** Complete — High and Medium priorities completed October 16, 2026; Low priority completed October 17, 2026.
 
 **Objective:** Make answers easy to verify against precise locations in the uploaded PDFs. The original order was Low → Medium → High; the user directed High priority execution first on October 16, 2026, followed by Medium. The High priority implementation includes only the metadata and citation support it needs. Update the [Phase 2 engineering log](https://app.notion.com/p/3fa7cd5908fc81d0956ce0e18f7cad66) after each priority is complete.
 
 ### Low priority — evidence foundation and answer usability
 
-- [ ] Preserve document ID, stable chunk ID, page number or page range, element type, and available source location through partitioning, chunking, indexing, retrieval, and saved chat sources. Mark unavailable locations explicitly; do not invent page numbers.
-- [ ] Render generated answers as sanitized Markdown, including safe links and code blocks.
-- [ ] Add answer actions for copy, regenerate, and export; retain the existing cancel action as the stop control and make its state clear in the answer UI.
+- [x] Preserve document ID, stable chunk ID, page number or page range, element type, and available source location through partitioning, chunking, indexing, retrieval, and saved chat sources. Mark unavailable locations explicitly; do not invent page numbers.
+- [x] Render generated answers as sanitized Markdown, including safe links and code blocks.
+- [x] Add answer actions for copy, regenerate, and export; retain the existing cancel action as the stop control and make its state clear in the answer UI.
 
 **Acceptance:** A retrieved source has stable identity and any real page/location metadata available from extraction; saved conversations retain it. Markdown and answer actions work for streamed and reloaded answers without unsafe rendering.
 
 **Reviewable commits:** (1) evidence metadata and persistence, (2) Markdown rendering and answer controls, (3) focused tests/fixes if needed. Make each commit after its slice passes relevant checks; do not wait to commit the whole priority.
+
+**Low priority completion:** New source chunks carry stable document/chunk IDs, actual extracted page numbers, element types, and complete/partial/unavailable page-location status through indexing, retrieval, and saved chat sources. Older vectors without this metadata display unavailable location. Answers render GitHub-flavored Markdown with raw HTML skipped, safe external links, code blocks, and source-bound citation buttons. Answer controls copy text, export Markdown with a source appendix, regenerate the original question as a new turn, and show an answer-level stop state during streaming. Validation: 21 backend tests, 9 component tests, 6 Chromium end-to-end tests, lint, webpack production build/TypeScript, production CSS check, production dependency audit (zero vulnerabilities), and `git diff --check` passed. Commits: `c66d4c9`, `139cbd8`, `14b6b66`, `56b810e`. Existing indexed PDFs need re-ingestion to gain new extraction metadata; Phase 3 will calibrate retrieval heuristics.
 
 ### Medium priority — visible grounding and feedback
 
