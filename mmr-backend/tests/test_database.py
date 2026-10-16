@@ -27,7 +27,15 @@ class DatabaseTests(unittest.TestCase):
             role="assistant",
             content="Initial answer",
         )
-        sources = [{"filename": "report.pdf", "chunk_id": 2}]
+        sources = [{
+            "document_id": "document-1",
+            "filename": "report.pdf",
+            "chunk_id": "document-1::2",
+            "page_numbers": [3, 4],
+            "page_location_status": "partial",
+            "element_types": ["NarrativeText", "Table"],
+            "highlight_rect": None,
+        }]
         database.update_message_content("message-1", "Updated answer", sources)
 
         conversations = database.get_all_conversations()

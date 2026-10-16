@@ -68,6 +68,8 @@ test("loads documents and streams a cited answer", async ({ page }) => {
 
   await expect(page.getByText("Revenue increased by 12%.", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("Retrieved Sources (1)")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export" })).toBeVisible();
   await page.screenshot({
     path: path.resolve("../docs/images/chat-workspace.png"),
     fullPage: true,
