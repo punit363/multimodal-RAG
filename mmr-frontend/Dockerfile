@@ -8,6 +8,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 RUN npm run build -- --webpack
+RUN npm run check:css
 
 FROM node:20-alpine AS runtime
 
