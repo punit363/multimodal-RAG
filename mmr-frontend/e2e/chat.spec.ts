@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 test("loads documents and streams a cited answer", async ({ page }) => {
@@ -109,9 +110,46 @@ test("shows a retry action after a streamed answer fails", async ({ page }) => {
   const question = page.getByPlaceholder("Ask a question about your selected documents...");
   await question.fill("Can this recover?");
   await question.press("Enter");
-  await expect(page.getByText("Temporary model failure", { exact: true })).toBeVisible();
+  await expect(page.getByText("Temporary model failure", { exact: true }).first()).toBeVisible();
 
   await page.getByRole("button", { name: "Retry answer" }).click();
   await expect(page.getByText(/Recovered answer/).last()).toBeVisible();
   expect(chatAttempts).toBe(2);
+});
+
+test("exports and regenerates a reloaded Markdown answer", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  let regeneratedQuery = "";
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/conversations" && route.request().method() === "GET") {
+      return route.fulfill({ json: [{ id: "conversation-1", title: "Revenue", messages: [
+        { id: "question-1", role: "user", content: "What changed?" },
+        { id: "answer-1", role: "assistant", content: "**Revenue rose.**", sources: [] },
+      ] }] });
+    }
+    if (pathname === "/api/documents") return route.fulfill({ json: [{ id: "doc-1", filename: "report.pdf", status: "ready" }] });
+    if (pathname === "/api/chat-stream") {
+      regeneratedQuery = route.request().postDataJSON().query;
+      return route.fulfill({ contentType: "text/event-stream", body: [
+        `data: ${JSON.stringify({ type: "sources", sources: [] })}\n\n`,
+        `data: ${JSON.stringify({ type: "token", token: "Updated **answer**" })}\n\n`,
+        `data: ${JSON.stringify({ type: "done" })}\n\n`,
+      ].join("") });
+    }
+    return route.abort();
+  });
+
+  await page.goto("/chat");
+  await expect(page.getByText("Revenue rose.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Copy" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("**Revenue rose.**");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("answer-answer-1.md");
+  expect(await readFile(await download.path(), "utf8")).toContain("**Revenue rose.**");
+  await page.getByRole("button", { name: "Regenerate" }).click();
+  await expect(page.getByText("Updated", { exact: false }).last()).toBeVisible();
+  expect(regeneratedQuery).toBe("What changed?");
 });

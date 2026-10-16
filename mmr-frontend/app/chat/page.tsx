@@ -8,6 +8,7 @@ import { IngestionStepper } from "@/components/IngestionStepper";
 import { SourceCitationCard } from "@/components/SourceCitationCard";
 import { AnswerWithCitations } from "@/components/AnswerWithCitations";
 import { AnswerFeedback, AnswerRating } from "@/components/AnswerFeedback";
+import { AnswerActions } from "@/components/AnswerActions";
 import { PdfCitationViewer } from "@/components/PdfCitationViewer";
 import { RetrievedChunk } from "@/types/rag";
 import { API_BASE_URL, fetchWithTimeout } from "@/lib/api";
@@ -73,6 +74,8 @@ export default function ChatWorkspace() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+  const [activeAssistantMessageId, setActiveAssistantMessageId] = useState<string | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
   const [chatError, setChatError] = useState("");
   const [feedbackPendingId, setFeedbackPendingId] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState("");
@@ -367,6 +370,8 @@ export default function ChatWorkspace() {
 
     const userMessageId = `usr-${crypto.randomUUID()}`;
     const assistantMessageId = `ast-${crypto.randomUUID()}`;
+    setActiveAssistantMessageId(assistantMessageId);
+    setIsStopping(false);
     const controller = new AbortController();
     chatControllerRef.current = controller;
     const timeout = window.setTimeout(
@@ -489,6 +494,8 @@ export default function ChatWorkspace() {
     } finally {
       window.clearTimeout(timeout);
       if (chatControllerRef.current === controller) chatControllerRef.current = null;
+      setActiveAssistantMessageId(null);
+      setIsStopping(false);
       setIsSearching(false);
     }
   };
@@ -499,6 +506,7 @@ export default function ChatWorkspace() {
   };
 
   const cancelChat = () => {
+    setIsStopping(true);
     chatControllerRef.current?.abort(new Error("Cancelled by user."));
   };
 
@@ -614,7 +622,7 @@ export default function ChatWorkspace() {
             </div>
           ) : (
             <div className="max-w-3xl mx-auto space-y-6">
-              {activeConversation.messages.map((msg) => (
+              {activeConversation.messages.map((msg, messageIndex) => (
                 <div key={msg.id} className="space-y-4">
                   {msg.role === "user" ? (
                     <div className="flex items-start gap-3 justify-end">
@@ -632,7 +640,7 @@ export default function ChatWorkspace() {
                       </div>
                       <div className="space-y-4 flex-1">
                         {msg.content ? (
-                          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-4 bg-neutral-50 dark:bg-neutral-900/40 text-xs text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">
+                          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-4 bg-neutral-50 dark:bg-neutral-900/40 text-xs text-neutral-800 dark:text-neutral-200 leading-relaxed">
                             <span className="text-[10px] font-mono uppercase tracking-widest text-[#D4AF37] block mb-2">
                               Generated Answer
                             </span>
@@ -642,13 +650,23 @@ export default function ChatWorkspace() {
                               onOpenPdf={openPdfSource}
                             />
                             <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+                              <AnswerActions answer={msg.content} messageId={msg.id} sources={msg.sources || []}
+                                onRegenerate={!isSearching && !noSourceSelected && activeConversation.messages.slice(0, messageIndex).reverse().find((item) => item.role === "user")?.content
+                                  ? () => void runSearch(activeConversation.messages.slice(0, messageIndex).reverse().find((item) => item.role === "user")!.content)
+                                  : undefined}
+                                isGenerating={activeAssistantMessageId === msg.id}
+                                isStopping={isStopping}
+                                onStop={cancelChat} />
+                            </div>
+                            <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
                               <AnswerFeedback feedback={msg.feedback || null} pending={feedbackPendingId === msg.id}
                                 onChange={(feedback) => void updateAnswerFeedback(msg.id, feedback)} />
                             </div>
                           </div>
                         ) : (
-                          <div className="text-xs text-neutral-500 animate-pulse italic">
-                            Thinking & generating answer...
+                          <div className="space-y-2 text-xs text-neutral-500 italic">
+                            <p className="animate-pulse">Thinking & generating answer...</p>
+                            {activeAssistantMessageId === msg.id && <AnswerActions answer="" messageId={msg.id} sources={[]} isGenerating isStopping={isStopping} onStop={cancelChat} />}
                           </div>
                         )}
 
@@ -721,7 +739,7 @@ export default function ChatWorkspace() {
                 onClick={cancelChat}
                 className="px-3 py-2.5 rounded-lg border border-red-500/40 text-red-500 text-xs hover:bg-red-500/10"
               >
-                Cancel
+                {isStopping ? "Stopping..." : "Stop generating"}
               </button>
             )}
           </form>
