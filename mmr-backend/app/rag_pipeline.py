@@ -14,6 +14,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 from app.security import sanitize_table_html
+from app.source_metadata import source_location
+from app.grounding import INSUFFICIENT_EVIDENCE_ANSWER, supported_results
 
 load_dotenv()
 
@@ -155,6 +157,7 @@ def build_documents(
     documents: List[Document] = []
     for i, chunk in enumerate(chunks):
         content_data = separate_content_types(chunk)
+        location = source_location(chunk)
 
         if content_data["tables"] or content_data["images"]:
             enhanced_content = create_ai_enhanced_summary(
@@ -171,6 +174,8 @@ def build_documents(
                     "document_id": source_id,
                     "chunk_index": i,
                     "chunk_id": f"{source_id}::{i}",
+                    "page_numbers": json.dumps(location["page_numbers"]),
+                    "highlight_rect": json.dumps(location["highlight_rect"]),
                     "original_content": json.dumps(
                         {
                             "raw_text": content_data["text"],
@@ -232,24 +237,34 @@ def _original_content(doc: Document) -> Dict[str, Any]:
     return content
 
 
-def _retrieve(query: str, k: int, sources: Optional[List[str]]) -> List[Document]:
-    return vectorstore.similarity_search(query, k=k, filter=_source_filter(sources))
+def _retrieve(query: str, k: int, sources: Optional[List[str]]) -> List[Tuple[Document, float]]:
+    results = vectorstore.similarity_search_with_relevance_scores(
+        query, k=k, filter=_source_filter(sources)
+    )
+    return supported_results(results)
 
 
 def _build_context(
-    docs: List[Document],
+    docs: List[Tuple[Document, float]],
 ) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Return (context_text, image_parts, sources_for_the_ui)."""
     context = ""
     image_parts: List[Dict[str, Any]] = []
     sources: List[Dict[str, Any]] = []
 
-    for i, doc in enumerate(docs):
+    for i, (doc, score) in enumerate(docs):
         original = _original_content(doc)
         filename = doc.metadata.get("filename", "Unknown Document")
         document_id = doc.metadata.get("document_id", filename)
+        chunk_id = doc.metadata.get("chunk_id") or f"{document_id}::{doc.metadata.get('chunk_index', i)}"
+        try:
+            page_numbers = json.loads(doc.metadata.get("page_numbers") or "[]")
+            highlight_rect = json.loads(doc.metadata.get("highlight_rect") or "null")
+        except (TypeError, ValueError):
+            page_numbers, highlight_rect = [], None
+        page_label = f", p.{page_numbers[0]}" if len(page_numbers) == 1 else ""
 
-        context += f"--- Document {i + 1} [{filename}] ---\n"
+        context += f"--- Source [[source:{chunk_id}]] [{filename}{page_label}] ---\n"
         if original.get("raw_text"):
             context += f"TEXT:\n{original['raw_text']}\n\n"
         for j, table in enumerate(original.get("tables_html", [])):
@@ -263,9 +278,12 @@ def _build_context(
         # Superset shape so the UI works whichever fields the citation card reads
         sources.append(
             {
-                "chunk_id": i + 1,
+                "chunk_id": chunk_id,
                 "document_id": document_id,
                 "filename": filename,
+                "page_numbers": page_numbers,
+                "highlight_rect": highlight_rect,
+                "relevance_score": score,
                 "content": doc.page_content,
                 "enhanced_content": doc.page_content,
                 "tables": original.get("tables_html", []),
@@ -290,11 +308,14 @@ def answer_query(
 ) -> Dict[str, Any]:
     """Non-streaming answer."""
     docs = _retrieve(query, k, sources)
+    if not docs:
+        return {"answer": INSUFFICIENT_EVIDENCE_ANSWER, "sources": [], "insufficient_evidence": True}
     context, image_parts, formatted_sources = _build_context(docs)
 
     prompt_text = (
         f"Based on the following documents, please answer this question: {query}\n\n"
-        f"CONTENT TO ANALYZE:\n{context or 'No matching document context found.'}\nANSWER:"
+        f"CONTENT TO ANALYZE:\n{context}\n"
+        "Cite supported claims using the exact [[source:chunk_id]] marker shown with each source.\nANSWER:"
     )
     message_content = [{"type": "text", "text": prompt_text}, *image_parts]
     response = llm.invoke([HumanMessage(content=message_content)])
@@ -313,6 +334,11 @@ def answer_query_stream(
     """
     try:
         docs = _retrieve(query, k, sources)
+        if not docs:
+            yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
+            yield f"data: {json.dumps({'type': 'token', 'token': INSUFFICIENT_EVIDENCE_ANSWER})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'insufficient_evidence': True})}\n\n"
+            return
         context, image_parts, formatted_sources = _build_context(docs)
 
         yield f"data: {json.dumps({'type': 'sources', 'sources': formatted_sources})}\n\n"
@@ -320,7 +346,7 @@ def answer_query_stream(
         system_prompt = (
             "You are an expert AI assistant performing RAG analysis over multi-modal context.\n"
             "Answer the user query based ONLY on the provided contextual chunks.\n"
-            "Cite the document source (filename) when explaining findings.\n"
+            "Cite each supported claim with the exact [[source:chunk_id]] marker shown in context.\n"
             "If the context does not contain the answer, say so.\n\n"
             f"Context:\n{context or 'No matching document context found.'}"
         )

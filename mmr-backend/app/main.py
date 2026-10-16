@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from pypdf import PdfReader
 
@@ -374,6 +374,26 @@ def get_documents():
             document["filename"] if storage_name == document["filename"] else document["id"]
         )
     return documents
+
+
+@app.get("/api/documents/{doc_id}/pdf")
+def get_document_pdf(doc_id: str):
+    """Serve only a registered, ready PDF from the upload directory."""
+    document = get_document(doc_id)
+    if not document or document.get("status") not in (None, "ready"):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    storage_name = document.get("storage_name") or document["filename"]
+    if Path(storage_name).name != storage_name or not storage_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    file_path = Path(UPLOAD_DIR) / storage_name
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Document file not found.")
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
+        filename=document["filename"],
+        content_disposition_type="inline",
+    )
 
 
 @app.delete("/api/documents/{doc_id}")

@@ -137,6 +137,25 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(uploaded_file.exists())
         self.assertEqual(database.list_documents(), [])
 
+    def test_pdf_endpoint_serves_only_registered_ready_documents(self):
+        document = database.add_document(
+            "report.pdf", doc_id="document-pdf", storage_name="document-pdf.pdf"
+        )
+        payload = self.pdf_bytes(2)
+        (Path(main.UPLOAD_DIR) / "document-pdf.pdf").write_bytes(payload)
+
+        response = self.client.get(f"/api/documents/{document['id']}/pdf")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, payload)
+        self.assertEqual(response.headers["content-type"], "application/pdf")
+        self.assertIn("inline", response.headers["content-disposition"])
+        self.assertEqual(self.client.get("/api/documents/missing/pdf").status_code, 404)
+
+        database.update_document_status(document["id"], "failed")
+        self.assertEqual(
+            self.client.get(f"/api/documents/{document['id']}/pdf").status_code, 404
+        )
+
     def test_ingestion_rejects_non_pdf_files(self):
         response = self.client.post(
             "/api/ingest-stream",
