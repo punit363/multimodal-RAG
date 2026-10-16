@@ -50,6 +50,32 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNone(database.get_document(first["id"]))
         self.assertEqual(len(database.list_documents()), 1)
 
+    def test_feedback_survives_database_reload_and_only_targets_answers(self):
+        database.create_conversation("conversation-1", "Test")
+        database.save_message("user-1", "conversation-1", "user", "Question")
+        database.save_message("assistant-1", "conversation-1", "assistant", "Answer")
+        self.assertFalse(database.set_message_feedback("user-1", "helpful"))
+        self.assertTrue(database.set_message_feedback("assistant-1", "not_helpful"))
+        self.assertEqual(database.get_all_conversations()[0]["messages"][1]["feedback"], "not_helpful")
+        self.assertTrue(database.set_message_feedback("assistant-1", None))
+        self.assertIsNone(database.get_all_conversations()[0]["messages"][1]["feedback"])
+
+    def test_existing_messages_table_gains_feedback_column(self):
+        with sqlite3.connect(self.database_path) as conn:
+            conn.execute("DROP TABLE messages")
+            conn.execute("""
+                CREATE TABLE messages (
+                    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL,
+                    content TEXT NOT NULL, sources_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("INSERT INTO messages (id, conversation_id, role, content) VALUES ('old', 'conv', 'assistant', 'Answer')")
+        database.init_db()
+        self.assertTrue(database.set_message_feedback("old", "helpful"))
+        with database.get_connection() as conn:
+            self.assertEqual(conn.execute("SELECT feedback FROM messages WHERE id = 'old'").fetchone()[0], "helpful")
+
     def test_legacy_unique_filename_registry_is_migrated(self):
         with sqlite3.connect(self.database_path) as conn:
             conn.execute("DROP TABLE documents")

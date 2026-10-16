@@ -38,9 +38,13 @@ def init_db() -> None:
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 sources_json TEXT,
+                feedback TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        message_columns = {row[1] for row in cursor.execute("PRAGMA table_info(messages)").fetchall()}
+        if "feedback" not in message_columns:
+            cursor.execute("ALTER TABLE messages ADD COLUMN feedback TEXT")
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages (conversation_id)"
         )
@@ -140,6 +144,7 @@ def get_all_conversations() -> List[Dict[str, Any]]:
                         "role": msg["role"],
                         "content": msg["content"],
                         "sources": sources,
+                        "feedback": msg["feedback"],
                     }
                 )
 
@@ -194,6 +199,17 @@ def update_message_content(
         logger.info("Updated message content -> id: %s", msg_id)
     except Exception:
         logger.exception("Failed to update message %s", msg_id)
+
+
+def set_message_feedback(msg_id: str, feedback: Optional[str]) -> bool:
+    """Set feedback only for an existing assistant message."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE messages SET feedback = ? WHERE id = ? AND role = 'assistant'",
+            (feedback, msg_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
 
 
 # ---------------------------------------------------------------------------

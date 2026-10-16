@@ -106,3 +106,27 @@ test("shows an explicit insufficient-evidence answer without sources", async ({ 
   await expect(page.getByText(/don't have enough relevant evidence/)).toBeVisible();
   await expect(page.getByText("Retrieved Sources")).toHaveCount(0);
 });
+
+test("saves answer feedback and restores it after reloading", async ({ page }) => {
+  let feedback: "helpful" | "not_helpful" | null = null;
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/documents") return route.fulfill({ json: [] });
+    if (pathname === "/api/conversations") {
+      return route.fulfill({ json: [{ id: "conversation-1", title: "Revenue", messages: [
+        { id: "answer-1", role: "assistant", content: "Revenue rose.", sources: [], feedback },
+      ] }] });
+    }
+    if (pathname === "/api/messages/answer-1/feedback" && route.request().method() === "PATCH") {
+      feedback = route.request().postDataJSON().feedback;
+      return route.fulfill({ json: { message_id: "answer-1", feedback } });
+    }
+    return route.abort();
+  });
+  await page.goto("/chat");
+  const helpful = page.getByRole("button", { name: "Helpful answer", exact: true });
+  await helpful.click();
+  await expect(helpful).toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Helpful answer", exact: true })).toHaveAttribute("aria-pressed", "true");
+});

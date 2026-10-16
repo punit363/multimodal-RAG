@@ -6,7 +6,7 @@ import uuid
 import asyncio
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +29,7 @@ from app.database import (
     get_all_conversations,
     save_message,
     update_message_content,
+    set_message_feedback,
     add_document,
     list_documents,
     get_document,
@@ -97,6 +98,10 @@ class StreamQueryRequest(BaseModel):
 
 class CreateConvRequest(BaseModel):
     title: str = "New Conversation"
+
+
+class FeedbackRequest(BaseModel):
+    feedback: Optional[Literal["helpful", "not_helpful"]]
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +363,14 @@ def new_conversation(req: CreateConvRequest):
     """Create a new conversation record."""
     conv_id = str(uuid.uuid4())
     return create_conversation(conv_id, req.title)
+
+
+@app.patch("/api/messages/{message_id}/feedback")
+def update_feedback(message_id: str, request: FeedbackRequest):
+    """Persist or clear feedback for one assistant answer."""
+    if not set_message_feedback(message_id, request.feedback):
+        raise HTTPException(status_code=404, detail="Assistant message not found.")
+    return {"message_id": message_id, "feedback": request.feedback}
 
 
 # ---------------------------------------------------------------------------

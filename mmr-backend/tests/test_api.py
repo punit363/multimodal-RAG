@@ -122,6 +122,15 @@ class ApiTests(unittest.TestCase):
         messages = self.client.get("/api/conversations").json()[0]["messages"]
         self.assertEqual(messages[1]["content"], "Answer failed: model unavailable")
 
+    def test_feedback_api_persists_and_rejects_invalid_targets(self):
+        database.create_conversation("conversation-1", "Test")
+        database.save_message("assistant-1", "conversation-1", "assistant", "Answer")
+        response = self.client.patch("/api/messages/assistant-1/feedback", json={"feedback": "helpful"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get("/api/conversations").json()[0]["messages"][0]["feedback"], "helpful")
+        self.assertEqual(self.client.patch("/api/messages/missing/feedback", json={"feedback": "helpful"}).status_code, 404)
+        self.assertEqual(self.client.patch("/api/messages/assistant-1/feedback", json={"feedback": "maybe"}).status_code, 422)
+
     def test_document_delete_removes_registry_vectors_and_file(self):
         document = database.add_document(
             "report.pdf", doc_id="document-1", storage_name="document-1.pdf"

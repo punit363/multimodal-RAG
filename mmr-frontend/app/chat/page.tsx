@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { IngestionStepper } from "@/components/IngestionStepper";
 import { SourceCitationCard } from "@/components/SourceCitationCard";
 import { AnswerWithCitations } from "@/components/AnswerWithCitations";
+import { AnswerFeedback, AnswerRating } from "@/components/AnswerFeedback";
 import { PdfCitationViewer } from "@/components/PdfCitationViewer";
 import { RetrievedChunk } from "@/types/rag";
 import { API_BASE_URL, fetchWithTimeout } from "@/lib/api";
@@ -37,6 +38,7 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   sources?: RetrievedChunk[];
+  feedback?: AnswerRating;
 }
 
 interface Conversation {
@@ -72,6 +74,8 @@ export default function ChatWorkspace() {
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [chatError, setChatError] = useState("");
+  const [feedbackPendingId, setFeedbackPendingId] = useState<string | null>(null);
+  const [feedbackError, setFeedbackError] = useState("");
   const [lastFailedQuery, setLastFailedQuery] = useState("");
   const chatControllerRef = useRef<AbortController | null>(null);
   const [workspaceError, setWorkspaceError] = useState("");
@@ -95,6 +99,27 @@ export default function ChatWorkspace() {
       ...chunk,
       document_id: registeredDocument?.id || chunk.document_id,
     });
+  };
+
+  const updateAnswerFeedback = async (messageId: string, feedback: AnswerRating) => {
+    setFeedbackPendingId(messageId);
+    setFeedbackError("");
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/messages/${encodeURIComponent(messageId)}/feedback`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback }),
+      });
+      if (!response.ok) throw new Error(`Could not save feedback (${response.status}).`);
+      setConversations((previous) => previous.map((conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((message) => message.id === messageId ? { ...message, feedback } : message),
+      })));
+    } catch (error) {
+      setFeedbackError(getErrorMessage(error, "Could not save feedback."));
+    } finally {
+      setFeedbackPendingId(null);
+    }
   };
 
   useEffect(() => {
@@ -616,6 +641,10 @@ export default function ChatWorkspace() {
                               sources={msg.sources || []}
                               onOpenPdf={openPdfSource}
                             />
+                            <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+                              <AnswerFeedback feedback={msg.feedback || null} pending={feedbackPendingId === msg.id}
+                                onChange={(feedback) => void updateAnswerFeedback(msg.id, feedback)} />
+                            </div>
                           </div>
                         ) : (
                           <div className="text-xs text-neutral-500 animate-pulse italic">
@@ -652,6 +681,7 @@ export default function ChatWorkspace() {
 
         {/* Input Form */}
         <div className="p-4 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-[#0D0D0D]">
+          {feedbackError && <p role="alert" className="max-w-3xl mx-auto mb-2 text-xs text-red-500">{feedbackError}</p>}
           {chatError && (
             <div className="max-w-3xl mx-auto mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500">
               <span>{chatError}</span>
