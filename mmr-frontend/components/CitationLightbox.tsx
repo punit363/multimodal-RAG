@@ -7,7 +7,7 @@ import { X, ZoomIn, Image as ImageIcon, Table as TableIcon } from "lucide-react"
 export interface LightboxData {
   type: "image" | "table";
   content: string; // Base64 image string or HTML table string
-  chunkId: number;
+  chunkId: string | number;
   title?: string;
 }
 

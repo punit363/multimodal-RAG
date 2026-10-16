@@ -9,9 +9,10 @@ import { Maximize2, Table as TableIcon, Image as ImageIcon } from "lucide-react"
 interface SourceCitationCardProps {
   chunk: RetrievedChunk;
   onOpenLightbox?: (data: LightboxData) => void;
+  onOpenPdf?: (chunk: RetrievedChunk) => void;
 }
 
-export function SourceCitationCard({ chunk, onOpenLightbox }: SourceCitationCardProps) {
+export function SourceCitationCard({ chunk, onOpenLightbox, onOpenPdf }: SourceCitationCardProps) {
   const content = chunk.metadata?.original_content || {
     raw_text: "",
     tables_html: [],
@@ -24,7 +25,11 @@ export function SourceCitationCard({ chunk, onOpenLightbox }: SourceCitationCard
       {/* Header */}
       <div className="flex items-center justify-between text-xs text-neutral-400 font-mono border-b border-neutral-800 pb-2">
         <span className="text-[#D4AF37] font-semibold">Chunk #{chunk.chunk_id}</span>
-        <span className="text-[10px] text-neutral-500">Similarity Score Ranked</span>
+        {chunk.document_id && onOpenPdf ? (
+          <button type="button" onClick={() => onOpenPdf(chunk)} className="text-[10px] text-[#D4AF37] hover:underline">
+            Open PDF {chunk.page_numbers?.length ? `p.${chunk.page_numbers[0]}` : "source"}
+          </button>
+        ) : null}
       </div>
 
       {/* Text Content */}

@@ -6,6 +6,8 @@ import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { IngestionStepper } from "@/components/IngestionStepper";
 import { SourceCitationCard } from "@/components/SourceCitationCard";
+import { AnswerWithCitations } from "@/components/AnswerWithCitations";
+import { PdfCitationViewer } from "@/components/PdfCitationViewer";
 import { RetrievedChunk } from "@/types/rag";
 import { API_BASE_URL, fetchWithTimeout } from "@/lib/api";
 import {
@@ -76,12 +78,24 @@ export default function ChatWorkspace() {
   const [failedDelete, setFailedDelete] = useState<DocumentItem | null>(null);
 
   const [activeLightbox, setActiveLightbox] = useState<LightboxData | null>(null);
+  const [activePdfSource, setActivePdfSource] = useState<RetrievedChunk | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
   const readyDocuments = documents.filter((doc) => !doc.status || doc.status === "ready");
 
   const noSourceSelected = readyDocuments.length === 0 || selectedDocIds.size === 0;
+
+  const openPdfSource = (chunk: RetrievedChunk) => {
+    const registeredDocument = documents.find(
+      (document) =>
+        document.id === chunk.document_id || document.source_id === chunk.document_id
+    );
+    setActivePdfSource({
+      ...chunk,
+      document_id: registeredDocument?.id || chunk.document_id,
+    });
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -597,7 +611,11 @@ export default function ChatWorkspace() {
                             <span className="text-[10px] font-mono uppercase tracking-widest text-[#D4AF37] block mb-2">
                               Generated Answer
                             </span>
-                            {msg.content}
+                            <AnswerWithCitations
+                              text={msg.content}
+                              sources={msg.sources || []}
+                              onOpenPdf={openPdfSource}
+                            />
                           </div>
                         ) : (
                           <div className="text-xs text-neutral-500 animate-pulse italic">
@@ -616,6 +634,7 @@ export default function ChatWorkspace() {
                                   key={chunk.chunk_id}
                                   chunk={chunk}
                                   onOpenLightbox={(data) => setActiveLightbox(data)}
+                                  onOpenPdf={openPdfSource}
                                 />
                               ))}
                             </div>
@@ -783,6 +802,12 @@ export default function ChatWorkspace() {
           )}
         </div>
       </aside>
+      {activePdfSource && (
+        <PdfCitationViewer
+          chunk={activePdfSource}
+          onClose={() => setActivePdfSource(null)}
+        />
+      )}
 
       <CitationLightbox data={activeLightbox} onClose={() => setActiveLightbox(null)} />
     </div>

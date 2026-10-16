@@ -7,7 +7,18 @@ export interface OriginalContent {
   }
   
   export interface RetrievedChunk {
-    chunk_id: number;
+    chunk_id: string | number;
+    document_id?: string;
+    filename?: string;
+    page_numbers?: number[];
+    highlight_rect?: {
+      page: number;
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+    } | null;
+    relevance_score?: number;
     enhanced_content: string;
     metadata: {
       original_content: OriginalContent;
