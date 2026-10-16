@@ -23,6 +23,22 @@ describe("AnswerWithCitations", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open citation report.pdf, p.3" }));
     expect(onOpenPdf).toHaveBeenCalledWith(source);
-    expect(screen.getByText(/Unknown \[\[source:missing\]\]/)).toBeVisible();
+    expect(screen.getByText("[Unverified source]")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /missing/ })).not.toBeInTheDocument();
+  });
+
+  it("labels a source whose page is unknown without inventing a page", () => {
+    const onOpenPdf = vi.fn();
+    const source = {
+      chunk_id: "doc-2::0",
+      document_id: "doc-2",
+      filename: "appendix.pdf",
+      page_numbers: [],
+      enhanced_content: "Appendix",
+      metadata: { original_content: { raw_text: "Appendix", tables_html: [], images_base64: [] } },
+    };
+    render(<AnswerWithCitations text="See [[source:doc-2::0]]" sources={[source]} onOpenPdf={onOpenPdf} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open citation appendix.pdf, page unavailable" }));
+    expect(onOpenPdf).toHaveBeenCalledWith(source);
   });
 });

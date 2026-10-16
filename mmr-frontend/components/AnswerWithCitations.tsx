@@ -14,9 +14,12 @@ export function AnswerWithCitations({ text, sources, onOpenPdf }: AnswerWithCita
       {parts.map((part, index) => {
         const match = /^\[\[source:(.+)\]\]$/.exec(part);
         const source = match && sources.find((chunk) => String(chunk.chunk_id) === match[1]);
-        if (!source || !source.document_id) return <Fragment key={index}>{part}</Fragment>;
+        if (!match) return <Fragment key={index}>{part}</Fragment>;
+        if (!source || !source.document_id) {
+          return <span key={index} title="This citation does not match an available PDF source" className="text-amber-600 dark:text-amber-400">[Unverified source]</span>;
+        }
         const page = source.page_numbers?.[0];
-        const label = `${source.filename || "Document"}${page ? `, p.${page}` : ""}`;
+        const label = `${source.filename || "Document"}, ${page ? `p.${page}` : "page unavailable"}`;
         return (
           <button
             key={index}
