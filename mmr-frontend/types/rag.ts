@@ -11,6 +11,8 @@ export interface OriginalContent {
     document_id?: string;
     filename?: string;
     page_numbers?: number[];
+    page_location_status?: "complete" | "partial" | "unavailable";
+    element_types?: string[];
     highlight_rect?: {
       page: number;
       left: number;

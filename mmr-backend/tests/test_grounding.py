@@ -34,6 +34,8 @@ class GroundingTests(unittest.TestCase):
         )
         location = source_location(chunk)
         self.assertEqual(location["page_numbers"], [2])
+        self.assertEqual(location["page_location_status"], "complete")
+        self.assertEqual(location["element_types"], ["SimpleNamespace"])
         for key, value in {"left": 0.1, "top": 0.1, "width": 0.3, "height": 0.2}.items():
             self.assertAlmostEqual(location["highlight_rect"][key], value)
 
@@ -44,8 +46,21 @@ class GroundingTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            source_location(chunk), {"page_numbers": [2, 3], "highlight_rect": None}
+            source_location(chunk), {
+                "page_numbers": [2, 3],
+                "page_location_status": "complete",
+                "element_types": ["SimpleNamespace"],
+                "highlight_rect": None,
+            }
         )
+
+    def test_source_location_marks_partial_and_missing_pages(self):
+        partial = types.SimpleNamespace(metadata=types.SimpleNamespace(orig_elements=[element(4), element(None)]))
+        missing = types.SimpleNamespace(metadata=types.SimpleNamespace(orig_elements=[element(None)]))
+        self.assertEqual(source_location(partial)["page_location_status"], "partial")
+        self.assertEqual(source_location(partial)["page_numbers"], [4])
+        self.assertEqual(source_location(missing)["page_location_status"], "unavailable")
+        self.assertEqual(source_location(missing)["page_numbers"], [])
 
 
 if __name__ == "__main__":

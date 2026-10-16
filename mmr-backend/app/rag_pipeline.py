@@ -175,6 +175,8 @@ def build_documents(
                     "chunk_index": i,
                     "chunk_id": f"{source_id}::{i}",
                     "page_numbers": json.dumps(location["page_numbers"]),
+                    "page_location_status": location["page_location_status"],
+                    "element_types": json.dumps(location["element_types"]),
                     "highlight_rect": json.dumps(location["highlight_rect"]),
                     "original_content": json.dumps(
                         {
@@ -259,9 +261,13 @@ def _build_context(
         chunk_id = doc.metadata.get("chunk_id") or f"{document_id}::{doc.metadata.get('chunk_index', i)}"
         try:
             page_numbers = json.loads(doc.metadata.get("page_numbers") or "[]")
+            element_types = json.loads(doc.metadata.get("element_types") or "[]")
             highlight_rect = json.loads(doc.metadata.get("highlight_rect") or "null")
         except (TypeError, ValueError):
-            page_numbers, highlight_rect = [], None
+            page_numbers, element_types, highlight_rect = [], [], None
+        page_location_status = doc.metadata.get("page_location_status") or (
+            "complete" if page_numbers else "unavailable"
+        )
         page_label = f", p.{page_numbers[0]}" if len(page_numbers) == 1 else ""
 
         context += f"--- Source [[source:{chunk_id}]] [{filename}{page_label}] ---\n"
@@ -282,6 +288,8 @@ def _build_context(
                 "document_id": document_id,
                 "filename": filename,
                 "page_numbers": page_numbers,
+                "page_location_status": page_location_status,
+                "element_types": element_types,
                 "highlight_rect": highlight_rect,
                 "relevance_score": score,
                 "content": doc.page_content,

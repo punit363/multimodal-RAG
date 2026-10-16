@@ -45,8 +45,18 @@ def source_location(chunk: Any) -> Dict[str, Any]:
     if not pages and (page := _page_number(chunk)):
         pages = [page]
 
-    result: Dict[str, Any] = {"page_numbers": pages, "highlight_rect": None}
-    if len(pages) != 1 or any(_page_number(element) != pages[0] for element in elements):
+    located_elements = sum(_page_number(element) is not None for element in elements)
+    page_location_status = (
+        "unavailable" if not pages else "complete" if located_elements == len(elements) else "partial"
+    )
+    element_types = sorted({type(element).__name__ for element in elements})
+    result: Dict[str, Any] = {
+        "page_numbers": pages,
+        "page_location_status": page_location_status,
+        "element_types": element_types,
+        "highlight_rect": None,
+    }
+    if page_location_status != "complete" or len(pages) != 1:
         return result
     rects = [_normalized_rect(element) for element in elements]
     if any(rect is None for rect in rects):

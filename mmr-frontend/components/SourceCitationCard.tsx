@@ -34,6 +34,13 @@ export function SourceCitationCard({ chunk, onOpenLightbox, onOpenPdf }: SourceC
         ) : null}
       </div>
 
+      <div className="text-[11px] text-neutral-500">
+        {chunk.page_numbers?.length
+          ? `Page${chunk.page_numbers.length > 1 ? "s" : ""} ${chunk.page_numbers.join(", ")}${chunk.page_location_status === "partial" ? " (partial location)" : ""}`
+          : "Page location unavailable"}
+        {chunk.element_types?.length ? ` · ${chunk.element_types.join(", ")}` : ""}
+      </div>
+
       {relevance && (
         <div className="text-[11px] text-neutral-400" title="Normalized cosine similarity between the question and this retrieved chunk; this is not the probability that the answer is correct.">
           {relevance}
