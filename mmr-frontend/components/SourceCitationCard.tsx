@@ -5,6 +5,7 @@ import Image from "next/image";
 import { RetrievedChunk } from "@/types/rag";
 import { LightboxData } from "@/components/CitationLightbox";
 import { Maximize2, Table as TableIcon, Image as ImageIcon } from "lucide-react";
+import { relevanceLabel } from "@/lib/relevance";
 
 interface SourceCitationCardProps {
   chunk: RetrievedChunk;
@@ -18,6 +19,7 @@ export function SourceCitationCard({ chunk, onOpenLightbox, onOpenPdf }: SourceC
     tables_html: [],
     images_base64: [],
   };
+  const relevance = relevanceLabel(chunk.relevance_score);
 
   return (
     <div className="border border-neutral-800 rounded-xl p-4 bg-[#111111] hover:border-neutral-700 transition-all space-y-3">
@@ -31,6 +33,12 @@ export function SourceCitationCard({ chunk, onOpenLightbox, onOpenPdf }: SourceC
           </button>
         ) : null}
       </div>
+
+      {relevance && (
+        <div className="text-[11px] text-neutral-400" title="Normalized cosine similarity between the question and this retrieved chunk; this is not the probability that the answer is correct.">
+          {relevance}
+        </div>
+      )}
 
       {/* Text Content */}
       {content.raw_text && (

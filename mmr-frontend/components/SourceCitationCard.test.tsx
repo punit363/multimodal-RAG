@@ -33,4 +33,13 @@ describe("SourceCitationCard", () => {
       chunkId: 4,
     });
   });
+
+  it("labels weak retrieval similarity without calling it confidence", () => {
+    render(<SourceCitationCard chunk={{
+      chunk_id: "doc::1", relevance_score: 0.42, enhanced_content: "Excerpt",
+      metadata: { original_content: { raw_text: "Excerpt", tables_html: [], images_base64: [] } },
+    }} />);
+    expect(screen.getByText("42% retrieval similarity · Weak match")).toBeVisible();
+    expect(screen.getByTitle(/not the probability/)).toBeVisible();
+  });
 });

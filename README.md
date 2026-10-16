@@ -104,6 +104,7 @@ The completed Phase 1 record and the prioritized Phase 2 roadmap are tracked in 
 - Authentication and workspace isolation are not implemented.
 - Ingestion runs within the API process and is intended for local MVP use.
 - Phase 2 High priority adds cited PDF source navigation and an insufficient-evidence response. The remaining answer controls, feedback, and relevance display are planned; retrieval-quality evaluation remains planned for a later phase.
+- Source cards show normalized cosine retrieval similarity from 0 to 100%; scores below 50% are marked **Weak match**. This is a measure of question-to-chunk similarity, not answer correctness or model confidence. The backend currently excludes scores below 35% by default (`RAG_MIN_RELEVANCE_SCORE`); that cutoff is a heuristic pending Phase 3 evaluation.
 
 ## Answer grounding
 
