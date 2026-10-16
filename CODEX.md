@@ -56,9 +56,9 @@ Phase 1 is complete. Phase 2 can build on this stable baseline with stronger ret
 
 ## Phase 2 — Answer Grounding and Citations
 
-**Status:** In progress — High priority complete October 16, 2026; Low and Medium remain planned.
+**Status:** In progress — High and Medium priorities complete October 16, 2026; Low remains planned.
 
-**Objective:** Make answers easy to verify against precise locations in the uploaded PDFs. The original order was Low → Medium → High; the user directed High priority execution first on October 16, 2026. The High priority implementation includes only the metadata and citation support it needs. Update the [Phase 2 engineering log](https://app.notion.com/p/3fa7cd5908fc81d0956ce0e18f7cad66) after each priority is complete.
+**Objective:** Make answers easy to verify against precise locations in the uploaded PDFs. The original order was Low → Medium → High; the user directed High priority execution first on October 16, 2026, followed by Medium. The High priority implementation includes only the metadata and citation support it needs. Update the [Phase 2 engineering log](https://app.notion.com/p/3fa7cd5908fc81d0956ce0e18f7cad66) after each priority is complete.
 
 ### Low priority — evidence foundation and answer usability
 
@@ -72,13 +72,15 @@ Phase 1 is complete. Phase 2 can build on this stable baseline with stronger ret
 
 ### Medium priority — visible grounding and feedback
 
-- [ ] Generate and render inline citations tied to returned source IDs, with document name and page label when known; make citations open the relevant source.
-- [ ] Expose retrieval relevance scores with a documented score meaning and label weak matches without presenting raw rank as confidence.
-- [ ] Add per-answer feedback and persist it so feedback remains after reloading a conversation.
+- [x] Generate and render inline citations tied to returned source IDs, with document name and page label when known; make citations open the relevant source.
+- [x] Expose retrieval relevance scores with a documented score meaning and label weak matches without presenting raw rank as confidence.
+- [x] Add per-answer feedback and persist it so feedback remains after reloading a conversation.
 
 **Acceptance:** Each cited answer span resolves to a returned source; unknown pages are labeled honestly. Weak matches are clearly identified. Feedback is saved and recoverable. Citation and feedback flows have automated coverage.
 
 **Reviewable commits:** (1) citation contract and answer rendering, (2) score presentation and weak-match labels, (3) feedback persistence/UI and tests.
+
+**Medium priority completion:** Citation markers link only to returned, registered PDF sources; unknown pages say "page unavailable," and unmatched markers display an unverified-source label. Source cards display normalized cosine retrieval similarity and mark scores below `0.50` as weak (the backend acceptance cutoff remains `0.35`). Helpful/not-helpful ratings are saved per assistant message in SQLite, can be cleared, and reload with conversations. Validation: 20 backend tests, 6 frontend component tests, 5 Chromium end-to-end tests, lint, TypeScript/webpack production build, production CSS check, and `git diff --check` passed. Commits: `492a8ed`, `ad0da00`, `3f826cb`. Low priority remains open; retrieval cutoff calibration is deferred to Phase 3.
 
 ### High priority — source inspection and unsupported-answer guardrails
 
