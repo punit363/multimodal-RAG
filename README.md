@@ -96,14 +96,18 @@ npm run build
 npm run test:e2e
 ```
 
-The completed Phase 1 stabilization record and validation results are tracked in [CODEX.md](CODEX.md).
+The completed Phase 1 record and the prioritized Phase 2 roadmap are tracked in [CODEX.md](CODEX.md). The [Phase 2 engineering log](https://app.notion.com/p/3fa7cd5908fc81d0956ce0e18f7cad66) records implementation evidence after each priority is complete.
 
 ## Current limitations
 
 - Only PDF uploads are supported.
 - Authentication and workspace isolation are not implemented.
 - Ingestion runs within the API process and is intended for local MVP use.
-- Page-level citations and retrieval-quality evaluation are planned for a later phase.
+- Phase 2 High priority adds cited PDF source navigation and an insufficient-evidence response. The remaining answer controls, feedback, and relevance display are planned; retrieval-quality evaluation remains planned for a later phase.
+
+## Answer grounding
+
+`RAG_MIN_RELEVANCE_SCORE` defaults to `0.35`. The score is the vector store's normalized cosine relevance measure, with larger values indicating a closer match. It is a retrieval heuristic, not a calibrated probability. When every retrieved chunk scores below the threshold, both chat endpoints return an explicit insufficient-evidence answer without calling the answer model. The threshold should be tuned against a representative evaluation set before treating it as a quality guarantee.
 
 ## Runtime safety behavior
 

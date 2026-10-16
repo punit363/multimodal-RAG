@@ -54,3 +54,45 @@ Phase 1 stabilizes the existing MVP before retrieval and product features are ex
 
 Phase 1 is complete. Phase 2 can build on this stable baseline with stronger retrieval quality, grounded citations, evaluation datasets, and retrieval observability.
 
+## Phase 2 — Answer Grounding and Citations
+
+**Status:** In progress — High priority complete October 16, 2026; Low and Medium remain planned.
+
+**Objective:** Make answers easy to verify against precise locations in the uploaded PDFs. The original order was Low → Medium → High; the user directed High priority execution first on October 16, 2026. The High priority implementation includes only the metadata and citation support it needs. Update the [Phase 2 engineering log](https://app.notion.com/p/3fa7cd5908fc81d0956ce0e18f7cad66) after each priority is complete.
+
+### Low priority — evidence foundation and answer usability
+
+- [ ] Preserve document ID, stable chunk ID, page number or page range, element type, and available source location through partitioning, chunking, indexing, retrieval, and saved chat sources. Mark unavailable locations explicitly; do not invent page numbers.
+- [ ] Render generated answers as sanitized Markdown, including safe links and code blocks.
+- [ ] Add answer actions for copy, regenerate, and export; retain the existing cancel action as the stop control and make its state clear in the answer UI.
+
+**Acceptance:** A retrieved source has stable identity and any real page/location metadata available from extraction; saved conversations retain it. Markdown and answer actions work for streamed and reloaded answers without unsafe rendering.
+
+**Reviewable commits:** (1) evidence metadata and persistence, (2) Markdown rendering and answer controls, (3) focused tests/fixes if needed. Make each commit after its slice passes relevant checks; do not wait to commit the whole priority.
+
+### Medium priority — visible grounding and feedback
+
+- [ ] Generate and render inline citations tied to returned source IDs, with document name and page label when known; make citations open the relevant source.
+- [ ] Expose retrieval relevance scores with a documented score meaning and label weak matches without presenting raw rank as confidence.
+- [ ] Add per-answer feedback and persist it so feedback remains after reloading a conversation.
+
+**Acceptance:** Each cited answer span resolves to a returned source; unknown pages are labeled honestly. Weak matches are clearly identified. Feedback is saved and recoverable. Citation and feedback flows have automated coverage.
+
+**Reviewable commits:** (1) citation contract and answer rendering, (2) score presentation and weak-match labels, (3) feedback persistence/UI and tests.
+
+### High priority — source inspection and unsupported-answer guardrails
+
+- [x] Add a PDF viewer that opens the cited document at the cited page and highlights the cited content when reliable coordinates are available; use a page-level fallback when they are not.
+- [x] Define and test a retrieval relevance threshold, then return an explicit insufficient-evidence response for unsupported questions in both streamed and non-streamed paths.
+- [x] Add end-to-end coverage for navigation from an inline citation to the PDF and for low-relevance refusal.
+
+**Acceptance:** A citation opens the correct document and page; highlighting never points to fabricated coordinates. Unsupported queries do not receive a speculative answer, and the UI explains insufficient evidence.
+
+**Reviewable commits:** (1) document/page delivery and viewer, (2) highlight or page fallback, (3) refusal threshold and end-to-end tests.
+
+**High priority completion:** Registered PDFs are served by ID. Extracted page numbers and valid pixel-space rectangles are stored with source chunks; the viewer highlights only valid rectangles and falls back to page navigation otherwise. Retrieved results are filtered by a configurable normalized cosine relevance threshold (default `0.35`); no supported result produces an explicit insufficient-evidence answer in both chat paths. Inline source markers open the cited PDF. Validation: 17 backend tests, 4 frontend component tests, 4 Chromium end-to-end tests, lint, production build/TypeScript, and production dependency audit passed. Commits: `4a97987`, `5045d56`, plus the completion-record commit below. The threshold is a heuristic pending the representative evaluation work planned for Phase 3.
+
+### Execution record for every priority
+
+After completing each priority, update the Phase 2 Notion page with implemented features, changed files, names of new or updated functions/classes, commit hashes, validation results, learnings, blockers, and next steps. Record names only for functions/classes, without copying implementation logic into Notion. Keep the project log's quick phase summary linked to the full Phase 2 page. These are planned slices; adjust commit boundaries when code review calls for smaller changes.
+

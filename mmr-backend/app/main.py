@@ -386,7 +386,7 @@ def get_document_pdf(doc_id: str):
     if Path(storage_name).name != storage_name or not storage_name.lower().endswith(".pdf"):
         raise HTTPException(status_code=404, detail="Document not found.")
     file_path = Path(UPLOAD_DIR) / storage_name
-    if not file_path.is_file():
+    if file_path.resolve().parent != Path(UPLOAD_DIR).resolve() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Document file not found.")
     return FileResponse(
         file_path,
