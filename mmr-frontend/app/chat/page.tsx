@@ -73,6 +73,7 @@ export default function ChatWorkspace() {
   const [filterCreatedFrom, setFilterCreatedFrom] = useState("");
   const [filterCreatedTo, setFilterCreatedTo] = useState("");
   const [filterTag, setFilterTag] = useState("");
+  const [comparisonMode, setComparisonMode] = useState(false);
   const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
   const knownDocIdsRef = useRef<Set<string>>(new Set());
 
@@ -362,6 +363,11 @@ export default function ChatWorkspace() {
 
   const runSearch = async (currentQuery: string) => {
     if (!currentQuery.trim() || isSearching || noSourceSelected) return;
+    const selectedReadyCount = readyDocuments.filter((document) => selectedDocIds.has(document.id)).length;
+    if (comparisonMode && (selectedReadyCount < 2 || selectedReadyCount > 4)) {
+      setChatError("Select two to four ready documents for comparison.");
+      return;
+    }
     if (filterCreatedFrom && filterCreatedTo && filterCreatedFrom > filterCreatedTo) {
       setChatError("The start date must be on or before the end date.");
       return;
@@ -436,6 +442,7 @@ export default function ChatWorkspace() {
           assistant_message_id: assistantMessageId,
           top_k: 3,
           sources: selectedDocumentIds,
+          mode: comparisonMode ? "compare" : "answer",
           filters: {
             pages: filterPage ? [Number(filterPage)] : [],
             content_types: filterContentType ? [filterContentType] : [],
@@ -770,6 +777,10 @@ export default function ChatWorkspace() {
               </button>
             </div>
           )}
+          <label className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+            <input type="checkbox" checked={comparisonMode} onChange={(event) => setComparisonMode(event.target.checked)} aria-label="Compare selected documents" />
+            Compare selected documents (select 2–4)
+          </label>
           <form onSubmit={handleSearch} className="max-w-3xl mx-auto flex gap-2">
             <input
               type="text"

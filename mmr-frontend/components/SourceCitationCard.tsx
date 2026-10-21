@@ -35,6 +35,9 @@ export function SourceCitationCard({ chunk, onOpenLightbox, onOpenPdf }: SourceC
       </div>
 
       <div className="text-[11px] text-neutral-500">
+        {chunk.filename ? `${chunk.filename} · ` : ""}
+        {chunk.section_title ? `${chunk.section_title} · ` : ""}
+        {chunk.representation_type ? `${chunk.representation_type} · ` : ""}
         {chunk.page_numbers?.length
           ? `Page${chunk.page_numbers.length > 1 ? "s" : ""} ${chunk.page_numbers.join(", ")}${chunk.page_location_status === "partial" ? " (partial location)" : ""}`
           : "Page location unavailable"}

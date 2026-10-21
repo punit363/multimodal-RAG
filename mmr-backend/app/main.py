@@ -11,7 +11,7 @@ from typing import List, Literal, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pypdf import PdfReader
 
 from app.rag_pipeline import (
@@ -89,22 +89,35 @@ class HistoryMessage(BaseModel):
     content: str = Field(max_length=500)
 
 
-class QueryRequest(BaseModel):
+class ComparisonRequest(BaseModel):
+    mode: Literal["answer", "compare"] = "answer"
+    sources: Optional[List[str]] = None
+
+    @model_validator(mode="after")
+    def validate_comparison(self):
+        if self.mode == "compare" and (
+            not self.sources or not 2 <= len(self.sources) <= 4
+            or len(set(self.sources)) != len(self.sources)
+            or any(not source.strip() for source in self.sources)
+        ):
+            raise ValueError("Comparison requires two to four distinct selected documents.")
+        return self
+
+
+class QueryRequest(ComparisonRequest):
     query: str
     top_k: int = Field(default=3, ge=1, le=20)
-    sources: Optional[List[str]] = None
     filters: Optional[RetrievalFilters] = None
     history: List[HistoryMessage] = Field(default_factory=list, max_length=6)
 
 
-class StreamQueryRequest(BaseModel):
+class StreamQueryRequest(ComparisonRequest):
     query: str
     conversation_id: str
     user_message_id: str
     assistant_message_id: str
     top_k: int = Field(default=3, ge=1, le=20)
     # Immutable document ids selected as sources. None/empty = search everything.
-    sources: Optional[List[str]] = None
     filters: Optional[RetrievalFilters] = None
 
 
@@ -303,6 +316,8 @@ def chat_query(request: QueryRequest):
         raise HTTPException(status_code=400, detail="Query string cannot be empty.")
     try:
         options = {"filters": request.filters} if request.filters and request.filters.active() else {}
+        if request.mode == "compare":
+            options["mode"] = "compare"
         if request.history:
             options["history"] = [message.model_dump() for message in request.history]
         return answer_query(request.query, k=request.top_k, sources=request.sources or None, **options)
@@ -347,6 +362,8 @@ def chat_query_stream(request: StreamQueryRequest):
 
         try:
             options = {"filters": request.filters} if request.filters and request.filters.active() else {}
+            if request.mode == "compare":
+                options["mode"] = "compare"
             if history:
                 options["history"] = history
             for sse_line in answer_query_stream(

@@ -131,6 +131,39 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(captured["filters"].content_types, ["table"])
         self.assertEqual(self.client.post("/api/chat", json={"query": "Bad", "filters": {"pages": [0]}}).status_code, 422)
 
+    def test_comparison_requires_distinct_sources_and_forwards_mode(self):
+        captured = {}
+
+        def answer(query, k=3, sources=None, mode="answer"):
+            captured.update({"sources": sources, "mode": mode})
+            return {"answer": "comparison", "sources": []}
+
+        with patch.object(main, "answer_query", answer):
+            response = self.client.post("/api/chat", json={
+                "query": "Compare revenue", "mode": "compare", "sources": ["a", "b"],
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured, {"sources": ["a", "b"], "mode": "compare"})
+        for sources in ([], ["a"], ["a", "a"], ["a", "b", "c", "d", "e"]):
+            self.assertEqual(self.client.post("/api/chat", json={
+                "query": "Compare", "mode": "compare", "sources": sources,
+            }).status_code, 422)
+
+    def test_stream_comparison_forwards_mode(self):
+        captured = {}
+
+        def stream(query, k=3, sources=None, mode="answer"):
+            captured.update({"sources": sources, "mode": mode})
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        with patch.object(main, "answer_query_stream", stream):
+            response = self.client.post("/api/chat-stream", json={
+                "query": "Compare", "mode": "compare", "sources": ["a", "b"],
+                "conversation_id": "comparison", "user_message_id": "u", "assistant_message_id": "a",
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured, {"sources": ["a", "b"], "mode": "compare"})
+
     def test_non_stream_chat_forwards_bounded_history(self):
         captured = {}
 

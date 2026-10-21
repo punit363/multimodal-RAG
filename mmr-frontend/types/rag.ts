@@ -8,6 +8,9 @@ export interface OriginalContent {
   
   export interface RetrievedChunk {
     chunk_id: string | number;
+    parent_id?: string;
+    section_title?: string;
+    representation_type?: "text" | "table" | "image";
     document_id?: string;
     filename?: string;
     page_numbers?: number[];

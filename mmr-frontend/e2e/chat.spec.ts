@@ -109,6 +109,36 @@ test("passes page, content, date and tag filters with selected documents", async
   });
 });
 
+test("comparison mode requires two sources and sends both document IDs", async ({ page }) => {
+  let requestBody: Record<string, unknown> | null = null;
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/conversations" && route.request().method() === "GET") return route.fulfill({ json: [] });
+    if (pathname === "/api/conversations" && route.request().method() === "POST") return route.fulfill({ json: { id: "conv-compare", title: "Compare", messages: [] } });
+    if (pathname === "/api/documents") return route.fulfill({ json: [
+      { id: "doc-a", filename: "alpha.pdf", status: "ready" },
+      { id: "doc-b", filename: "beta.pdf", status: "ready" },
+    ] });
+    if (pathname === "/api/chat-stream") {
+      requestBody = route.request().postDataJSON();
+      return route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify({ type: "done" })}\n\n` });
+    }
+    return route.abort();
+  });
+  await page.goto("/chat");
+  await page.getByLabel("Compare selected documents").check();
+  await page.getByLabel("Use beta.pdf as a source").uncheck();
+  const question = page.getByPlaceholder("Ask a question about your selected documents...");
+  await question.fill("Compare revenue");
+  await question.press("Enter");
+  await expect(page.getByText("Select two to four ready documents for comparison.")).toBeVisible();
+  expect(requestBody).toBeNull();
+  await page.getByLabel("Use beta.pdf as a source").check();
+  await question.press("Enter");
+  await expect.poll(() => requestBody).not.toBeNull();
+  expect(requestBody).toMatchObject({ mode: "compare", sources: ["doc-a", "doc-b"] });
+});
+
 test("edits document tags and offers the new tag as a filter", async ({ page }) => {
   let tags: string[] = [];
   await page.route("http://localhost:8000/api/**", async (route) => {
