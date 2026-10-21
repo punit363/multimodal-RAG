@@ -28,6 +28,7 @@ def main() -> None:
                 "query": case["query"],
                 "top_k": args.k,
                 "sources": case.get("sources"),
+                "filters": case.get("filters"),
             }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",

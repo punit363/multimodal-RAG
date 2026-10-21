@@ -55,6 +55,7 @@ interface DocumentItem {
   status?: "processing" | "ready" | "failed" | "deleting" | "deletion_failed";
   error?: string;
   created_at?: string;
+  tags?: string[];
 }
 
 export default function ChatWorkspace() {
@@ -67,6 +68,11 @@ export default function ChatWorkspace() {
   // Knowledge base
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+  const [filterPage, setFilterPage] = useState("");
+  const [filterContentType, setFilterContentType] = useState("");
+  const [filterCreatedFrom, setFilterCreatedFrom] = useState("");
+  const [filterCreatedTo, setFilterCreatedTo] = useState("");
+  const [filterTag, setFilterTag] = useState("");
   const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
   const knownDocIdsRef = useRef<Set<string>>(new Set());
 
@@ -90,6 +96,7 @@ export default function ChatWorkspace() {
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
   const readyDocuments = documents.filter((doc) => !doc.status || doc.status === "ready");
+  const availableTags = [...new Set(readyDocuments.flatMap((doc) => doc.tags || []))].sort();
 
   const noSourceSelected = readyDocuments.length === 0 || selectedDocIds.size === 0;
 
@@ -224,6 +231,24 @@ export default function ChatWorkspace() {
     }
   };
 
+  const editDocumentTags = async (doc: DocumentItem) => {
+    const input = window.prompt(`Tags for ${doc.filename} (comma-separated)`, (doc.tags || []).join(", "));
+    if (input === null) return;
+    const tags = [...new Set(input.split(",").map((tag) => tag.trim()).filter(Boolean))];
+    setWorkspaceError("");
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/documents/${encodeURIComponent(doc.id)}/tags`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tags }),
+      });
+      if (!response.ok) throw new Error(`Could not save tags (${response.status}).`);
+      await fetchDocuments();
+    } catch (error) {
+      setWorkspaceError(getErrorMessage(error, "Could not save tags."));
+    }
+  };
+
   // Document Upload Stream Handler
   const handleIngestStream = async (selectedFile: File) => {
     if (selectedFile.type !== "application/pdf" || !selectedFile.name.toLowerCase().endsWith(".pdf")) {
@@ -337,6 +362,10 @@ export default function ChatWorkspace() {
 
   const runSearch = async (currentQuery: string) => {
     if (!currentQuery.trim() || isSearching || noSourceSelected) return;
+    if (filterCreatedFrom && filterCreatedTo && filterCreatedFrom > filterCreatedTo) {
+      setChatError("The start date must be on or before the end date.");
+      return;
+    }
     setChatError("");
     setLastFailedQuery(currentQuery);
 
@@ -407,6 +436,13 @@ export default function ChatWorkspace() {
           assistant_message_id: assistantMessageId,
           top_k: 3,
           sources: selectedDocumentIds,
+          filters: {
+            pages: filterPage ? [Number(filterPage)] : [],
+            content_types: filterContentType ? [filterContentType] : [],
+            created_from: filterCreatedFrom || null,
+            created_to: filterCreatedTo || null,
+            tags: filterTag ? [filterTag] : [],
+          },
         }),
         signal: controller.signal,
       });
@@ -699,6 +735,27 @@ export default function ChatWorkspace() {
 
         {/* Input Form */}
         <div className="p-4 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-[#0D0D0D]">
+          <div className="max-w-3xl mx-auto mb-3 grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
+            <label className="flex flex-col gap-1">Page
+              <input aria-label="Filter by page" type="number" min="1" value={filterPage} onChange={(event) => setFilterPage(event.target.value)} placeholder="Any" className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1" />
+            </label>
+            <label className="flex flex-col gap-1">Content
+              <select aria-label="Filter by content type" value={filterContentType} onChange={(event) => setFilterContentType(event.target.value)} className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1">
+                <option value="">Any</option><option value="text">Text</option><option value="table">Table</option><option value="image">Image</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">Uploaded from
+              <input aria-label="Filter from date" type="date" value={filterCreatedFrom} onChange={(event) => setFilterCreatedFrom(event.target.value)} className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1" />
+            </label>
+            <label className="flex flex-col gap-1">Uploaded through
+              <input aria-label="Filter through date" type="date" value={filterCreatedTo} onChange={(event) => setFilterCreatedTo(event.target.value)} className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1" />
+            </label>
+            <label className="flex flex-col gap-1">Tag
+              <select aria-label="Filter by tag" value={filterTag} onChange={(event) => setFilterTag(event.target.value)} className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1">
+                <option value="">Any</option>{availableTags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+              </select>
+            </label>
+          </div>
           {feedbackError && <p role="alert" className="max-w-3xl mx-auto mb-2 text-xs text-red-500">{feedbackError}</p>}
           {chatError && (
             <div className="max-w-3xl mx-auto mb-3 flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500">
@@ -830,6 +887,9 @@ export default function ChatWorkspace() {
                   <span className="truncate flex-1" title={doc.filename}>
                     {doc.filename}
                   </span>
+                  <button type="button" onClick={() => void editDocumentTags(doc)} disabled={isDeleting || (!!doc.status && doc.status !== "ready")} className="text-[10px] text-[#D4AF37] hover:underline disabled:opacity-50" title={(doc.tags || []).join(", ") || "No tags"} aria-label={`Edit tags for ${doc.filename}`}>
+                    {doc.tags?.length ? `${doc.tags.length} tags` : "Tags"}
+                  </button>
                   {doc.status && doc.status !== "ready" && (
                     <span className="text-[9px] text-amber-500" title={doc.error || doc.status}>
                       {doc.status.replace("_", " ")}

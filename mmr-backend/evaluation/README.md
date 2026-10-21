@@ -11,6 +11,8 @@ Create a private, fixed PDF corpus and ingest it into an isolated backend. Copy 
 
 Each case may include `sources`, a list of immutable document IDs to restrict retrieval in the non-streaming chat API. Omit it to search all indexed documents. This is useful for comparing like-for-like runs when an isolated corpus contains additional documents.
 
+Cases may also include a `filters` object with `pages`, `content_types`, `created_from`, `created_to`, or `tags`. The capture command forwards it to the same retrieval path used by chat. Dates are inclusive ISO dates. Requested page and content-type filters exclude older chunks lacking that metadata; re-ingest those PDFs before testing filtered retrieval. Tags are attached to registered documents through `PATCH /api/documents/{id}/tags` or the chat sidebar.
+
 Include text, table, image, multi-turn, cross-document, and deliberately unsupported questions. Review the evidence manually before marking chunks relevant. Keep the corpus, indexed document IDs, case file, model configuration, and `k` fixed across runs. A new ingestion creates new document IDs, so remap the gold IDs before comparison. Do not commit private PDFs or answer content.
 
 From `mmr-backend`, capture a baseline with the running API (this invokes the answer model and may incur API charges):

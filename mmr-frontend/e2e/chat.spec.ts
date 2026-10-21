@@ -76,6 +76,39 @@ test("loads documents and streams a cited answer", async ({ page }) => {
   });
 });
 
+test("passes page, content, date and tag filters with selected documents", async ({ page }) => {
+  let requestBody: Record<string, unknown> | null = null;
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/conversations" && route.request().method() === "GET") return route.fulfill({ json: [] });
+    if (pathname === "/api/conversations" && route.request().method() === "POST") return route.fulfill({ json: { id: "conv-1", title: "Filtered", messages: [] } });
+    if (pathname === "/api/documents") return route.fulfill({ json: [{ id: "doc-1", filename: "report.pdf", status: "ready", tags: ["Finance"] }] });
+    if (pathname === "/api/chat-stream") {
+      requestBody = route.request().postDataJSON();
+      return route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify({ type: "done" })}\n\n` });
+    }
+    return route.abort();
+  });
+  await page.goto("/chat");
+  await expect(page.getByLabel("Use report.pdf as a source")).toBeChecked();
+  await page.getByLabel("Filter by page").fill("3");
+  await page.getByLabel("Filter by content type").selectOption("table");
+  await page.getByLabel("Filter from date").fill("2026-01-01");
+  await page.getByLabel("Filter through date").fill("2026-12-31");
+  await page.getByLabel("Filter by tag").selectOption("Finance");
+  const question = page.getByPlaceholder("Ask a question about your selected documents...");
+  await question.fill("What changed?");
+  await question.press("Enter");
+  await expect.poll(() => requestBody).not.toBeNull();
+  expect(requestBody).toMatchObject({
+    sources: ["doc-1"],
+    filters: {
+      pages: [3], content_types: ["table"], created_from: "2026-01-01",
+      created_to: "2026-12-31", tags: ["Finance"],
+    },
+  });
+});
+
 test("shows a retry action after a streamed answer fails", async ({ page }) => {
   let chatAttempts = 0;
   await page.route("http://localhost:8000/api/**", async (route) => {
