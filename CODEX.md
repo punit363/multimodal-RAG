@@ -100,3 +100,36 @@ Phase 1 is complete. Phase 2 can build on this stable baseline with stronger ret
 
 After completing each priority, update the Phase 2 Notion page with implemented features, changed files, names of new or updated functions/classes, commit hashes, validation results, learnings, blockers, and next steps. Record names only for functions/classes, without copying implementation logic into Notion. Keep the project log's quick phase summary linked to the full Phase 2 page. These are planned slices; adjust commit boundaries when code review calls for smaller changes.
 
+## Phase 3 — Retrieval Quality
+
+**Status:** In progress — Low priority started October 21, 2026.
+
+**Objective:** Improve factual accuracy for difficult, follow-up, and cross-document questions. The [Phase 3 engineering log](https://app.notion.com/p/3fa7cd5908fc81eda42bfc938e72f64c) records evidence after each priority. Execute Low → Medium → High, using multiple reviewable commits within each priority.
+
+### Low priority — measurement and controlled scope
+
+- [ ] Add a fixed, versioned evaluation case format and repeatable retrieval/citation/answer-quality reporting. Record the Phase 2 baseline before tuning thresholds.
+- [ ] Add retrieval filters for selected documents, pages, dates, content types, and tags, with validation and honest handling of missing legacy metadata.
+
+**Acceptance:** A representative dataset can measure recall, citation correctness, groundedness, and answer quality. Filtered queries return only matching evidence in both chat paths, and invalid filters fail clearly.
+
+### Medium priority — stronger retrieval and follow-up questions
+
+- [ ] Combine semantic and keyword retrieval, comparing its results with the fixed Phase 2 baseline.
+- [ ] Rerank a bounded candidate set after initial retrieval and measure the effect on recall and citation correctness.
+- [ ] Rewrite follow-up queries using bounded conversation context while retaining the original user question for answer generation.
+
+**Acceptance:** Hybrid and reranked stages improve measured quality without regressing unsupported-answer behavior. Automated multi-turn tests cover resolved references and source isolation.
+
+### High priority — document structure and synthesis
+
+- [ ] Add section- and page-aware hierarchical chunking with stable source and parent identities.
+- [ ] Index separate searchable representations for text, tables, and images while preserving citation links to the original PDF evidence.
+- [ ] Add an explicit cross-document comparison mode with cited claims from each compared document.
+
+**Acceptance:** Cross-document and multimodal cases in the fixed evaluation set show a measurable improvement over the Phase 2 baseline; citations still resolve to real evidence. Automated tests cover ingestion, retrieval, and comparison.
+
+### Execution record for every priority
+
+After each priority, update the Phase 3 Notion page with implemented features, changed files, new and updated function/class names plus a short description of each, commits, validation results, learnings, blockers, and next steps. Update the main engineering log's quick phase summary with a link to the full Phase 3 details. Do not report a quality improvement until a representative evaluation has measured it.
+

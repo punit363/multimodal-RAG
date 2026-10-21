@@ -1,0 +1,2 @@
+{"id":"example-fact","query":"What is the sample policy limit?","answerable":true,"relevant_chunk_ids":["example-document::0"]}
+{"id":"example-unsupported","query":"What is the price on Mars?","answerable":false,"relevant_chunk_ids":[]}

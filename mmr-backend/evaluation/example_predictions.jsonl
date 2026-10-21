@@ -1,0 +1,2 @@
+{"id":"example-fact","retrieved_chunk_ids":["example-document::0"],"answer":"The sample limit is 10. [[source:example-document::0]]","insufficient_evidence":false,"groundedness":1,"answer_quality":1}
+{"id":"example-unsupported","retrieved_chunk_ids":[],"answer":"I do not have enough evidence.","insufficient_evidence":true,"groundedness":1,"answer_quality":1}

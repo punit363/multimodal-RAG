@@ -96,7 +96,7 @@ npm run build
 npm run test:e2e
 ```
 
-The completed Phase 1 record and the prioritized Phase 2 roadmap are tracked in [CODEX.md](CODEX.md). The [Phase 2 engineering log](https://app.notion.com/p/3fa7cd5908fc81d0956ce0e18f7cad66) records implementation evidence after each priority is complete.
+The completed Phase 1 and Phase 2 records and the prioritized Phase 3 roadmap are tracked in [CODEX.md](CODEX.md). The [Phase 3 engineering log](https://app.notion.com/p/3fa7cd5908fc81eda42bfc938e72f64c) records implementation evidence after each priority. The [evaluation guide](mmr-backend/evaluation/README.md) explains how to capture a fixed Phase 2 baseline before tuning retrieval.
 
 ## Current limitations
 
