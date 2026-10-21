@@ -16,6 +16,8 @@ from langchain_chroma import Chroma
 from app.security import sanitize_table_html
 from app.source_metadata import source_location
 from app.grounding import INSUFFICIENT_EVIDENCE_ANSWER, supported_results
+from app.database import list_documents
+from app.retrieval_filters import RetrievalFilters, eligible_chunk_ids
 
 load_dotenv()
 
@@ -177,6 +179,7 @@ def build_documents(
                     "page_numbers": json.dumps(location["page_numbers"]),
                     "page_location_status": location["page_location_status"],
                     "element_types": json.dumps(location["element_types"]),
+                    "content_types": json.dumps(sorted(content_data["types"])),
                     "highlight_rect": json.dumps(location["highlight_rect"]),
                     "original_content": json.dumps(
                         {
@@ -239,10 +242,36 @@ def _original_content(doc: Document) -> Dict[str, Any]:
     return content
 
 
-def _retrieve(query: str, k: int, sources: Optional[List[str]]) -> List[Tuple[Document, float]]:
-    results = vectorstore.similarity_search_with_relevance_scores(
-        query, k=k, filter=_source_filter(sources)
-    )
+def _retrieve(
+    query: str, k: int, sources: Optional[List[str]], filters: Optional[RetrievalFilters] = None
+) -> List[Tuple[Document, float]]:
+    if filters and filters.active():
+        candidates = vectorstore._collection.get(
+            where=_source_filter(sources), include=["metadatas"]
+        )
+        allowed_ids = eligible_chunk_ids(
+            candidates.get("ids") or [], candidates.get("metadatas") or [],
+            list_documents(), filters,
+        )
+        if not allowed_ids:
+            return []
+        query_vector = embeddings.embed_query(query)
+        results: List[Tuple[Document, float]] = []
+        normalize_score = vectorstore._select_relevance_score_fn()
+        for offset in range(0, len(allowed_ids), 500):
+            batch = allowed_ids[offset:offset + 500]
+            results.extend(
+                (document, normalize_score(distance))
+                for document, distance in vectorstore.similarity_search_by_vector_with_relevance_scores(
+                    query_vector, k=min(k, len(batch)), filter={"chunk_id": {"$in": batch}}
+                )
+            )
+        results.sort(key=lambda item: item[1], reverse=True)
+        results = results[:k]
+    else:
+        results = vectorstore.similarity_search_with_relevance_scores(
+            query, k=k, filter=_source_filter(sources)
+        )
     return supported_results(results)
 
 
@@ -312,10 +341,11 @@ def _build_context(
 # ---------------------------------------------------------------------------
 
 def answer_query(
-    query: str, k: int = 3, sources: Optional[List[str]] = None
+    query: str, k: int = 3, sources: Optional[List[str]] = None,
+    filters: Optional[RetrievalFilters] = None,
 ) -> Dict[str, Any]:
     """Non-streaming answer."""
-    docs = _retrieve(query, k, sources)
+    docs = _retrieve(query, k, sources, filters)
     if not docs:
         return {"answer": INSUFFICIENT_EVIDENCE_ANSWER, "sources": [], "insufficient_evidence": True}
     context, image_parts, formatted_sources = _build_context(docs)
@@ -335,13 +365,14 @@ def answer_query_stream(
     query: str,
     k: int = 3,
     sources: Optional[List[str]] = None,
+    filters: Optional[RetrievalFilters] = None,
 ) -> Generator[str, None, None]:
     """Stream SSE events: one `sources` event, many `token` events, then `done`.
 
     If `sources` (a list of filenames) is given, retrieval is restricted to them.
     """
     try:
-        docs = _retrieve(query, k, sources)
+        docs = _retrieve(query, k, sources, filters)
         if not docs:
             yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
             yield f"data: {json.dumps({'type': 'token', 'token': INSUFFICIENT_EVIDENCE_ANSWER})}\n\n"

@@ -11,7 +11,7 @@ from typing import List, Literal, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from pypdf import PdfReader
 
 from app.rag_pipeline import (
@@ -23,6 +23,7 @@ from app.rag_pipeline import (
     answer_query_stream,
     delete_document_vectors,
 )
+from app.retrieval_filters import RetrievalFilters
 from app.database import (
     init_db,
     create_conversation,
@@ -35,6 +36,7 @@ from app.database import (
     get_document,
     delete_document_record,
     update_document_status,
+    set_document_tags,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -83,8 +85,9 @@ os.makedirs(QUARANTINE_DIR, exist_ok=True)
 
 class QueryRequest(BaseModel):
     query: str
-    top_k: int = 3
+    top_k: int = Field(default=3, ge=1, le=20)
     sources: Optional[List[str]] = None
+    filters: Optional[RetrievalFilters] = None
 
 
 class StreamQueryRequest(BaseModel):
@@ -92,9 +95,10 @@ class StreamQueryRequest(BaseModel):
     conversation_id: str
     user_message_id: str
     assistant_message_id: str
-    top_k: int = 3
+    top_k: int = Field(default=3, ge=1, le=20)
     # Immutable document ids selected as sources. None/empty = search everything.
     sources: Optional[List[str]] = None
+    filters: Optional[RetrievalFilters] = None
 
 
 class CreateConvRequest(BaseModel):
@@ -103,6 +107,18 @@ class CreateConvRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     feedback: Optional[Literal["helpful", "not_helpful"]]
+
+
+class TagsRequest(BaseModel):
+    tags: List[str] = Field(max_length=20)
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, tags: List[str]) -> List[str]:
+        normalized = [tag.strip() for tag in tags]
+        if any(not tag or len(tag) > 40 for tag in normalized):
+            raise ValueError("Tags must be non-empty and at most 40 characters.")
+        return list(dict.fromkeys(normalized))
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +295,8 @@ def chat_query(request: QueryRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query string cannot be empty.")
     try:
-        return answer_query(request.query, k=request.top_k, sources=request.sources or None)
+        options = {"filters": request.filters} if request.filters and request.filters.active() else {}
+        return answer_query(request.query, k=request.top_k, sources=request.sources or None, **options)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution failed: {e}")
 
@@ -319,8 +336,9 @@ def chat_query_stream(request: StreamQueryRequest):
         stream_error = ""
 
         try:
+            options = {"filters": request.filters} if request.filters and request.filters.active() else {}
             for sse_line in answer_query_stream(
-                request.query, k=request.top_k, sources=request.sources or None
+                request.query, k=request.top_k, sources=request.sources or None, **options
             ):
                 yield sse_line
 
@@ -388,6 +406,14 @@ def get_documents():
             document["filename"] if storage_name == document["filename"] else document["id"]
         )
     return documents
+
+
+@app.patch("/api/documents/{doc_id}/tags")
+def update_document_tags(doc_id: str, request: TagsRequest):
+    """Assign searchable labels to a ready document."""
+    if not set_document_tags(doc_id, request.tags):
+        raise HTTPException(status_code=404, detail="Ready document not found.")
+    return get_document(doc_id)
 
 
 @app.get("/api/documents/{doc_id}/pdf")

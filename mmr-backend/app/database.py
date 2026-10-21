@@ -55,6 +55,7 @@ def init_db() -> None:
                 storage_name TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'ready',
                 error TEXT,
+                tags_json TEXT NOT NULL DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -68,6 +69,8 @@ def init_db() -> None:
             cursor.execute("ALTER TABLE documents ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'")
         if "error" not in document_columns:
             cursor.execute("ALTER TABLE documents ADD COLUMN error TEXT")
+        if "tags_json" not in document_columns:
+            cursor.execute("ALTER TABLE documents ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'")
         document_schema = cursor.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
         ).fetchone()[0]
@@ -80,13 +83,14 @@ def init_db() -> None:
                     storage_name TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'ready',
                     error TEXT,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             cursor.execute("""
-                INSERT INTO documents (id, filename, storage_name, status, error, created_at)
+                INSERT INTO documents (id, filename, storage_name, status, error, tags_json, created_at)
                 SELECT id, filename, COALESCE(storage_name, filename),
-                       COALESCE(status, 'ready'), error, created_at
+                       COALESCE(status, 'ready'), error, COALESCE(tags_json, '[]'), created_at
                 FROM documents_legacy
             """)
             cursor.execute("DROP TABLE documents_legacy")
@@ -237,7 +241,7 @@ def add_document(
         )
         conn.commit()
         row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
-    return dict(row)
+    return _document_record(row)
 
 
 def update_document_status(doc_id: str, status: str, error: Optional[str] = None) -> None:
@@ -255,7 +259,7 @@ def list_documents() -> List[Dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM documents ORDER BY created_at ASC, rowid ASC"
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [_document_record(row) for row in rows]
 
 
 def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
@@ -264,7 +268,24 @@ def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(
             "SELECT * FROM documents WHERE id = ?", (doc_id,)
         ).fetchone()
-    return dict(row) if row else None
+    return _document_record(row) if row else None
+
+
+def _document_record(row: sqlite3.Row) -> Dict[str, Any]:
+    record = dict(row)
+    record["tags"] = json.loads(record.pop("tags_json") or "[]")
+    return record
+
+
+def set_document_tags(doc_id: str, tags: List[str]) -> bool:
+    """Replace tags on a registered document without changing its identity."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE documents SET tags_json = ? WHERE id = ? AND status = 'ready'",
+            (json.dumps(tags), doc_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
 
 
 def delete_document_record(doc_id: str) -> None:

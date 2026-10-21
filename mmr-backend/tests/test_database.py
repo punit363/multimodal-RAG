@@ -58,6 +58,14 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNone(database.get_document(first["id"]))
         self.assertEqual(len(database.list_documents()), 1)
 
+    def test_document_tags_persist_after_reload_and_legacy_migration(self):
+        document = database.add_document("tagged.pdf", doc_id="tagged")
+        self.assertEqual(document["tags"], [])
+        self.assertTrue(database.set_document_tags("tagged", ["Finance", "2026"]))
+        database.init_db()
+        self.assertEqual(database.get_document("tagged")["tags"], ["Finance", "2026"])
+        self.assertFalse(database.set_document_tags("missing", ["Finance"]))
+
     def test_feedback_survives_database_reload_and_only_targets_answers(self):
         database.create_conversation("conversation-1", "Test")
         database.save_message("user-1", "conversation-1", "user", "Question")
@@ -107,6 +115,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(documents), 2)
         self.assertNotEqual(duplicate["id"], "legacy-id")
         self.assertEqual(database.get_document("legacy-id")["storage_name"], "report.pdf")
+        self.assertEqual(database.get_document("legacy-id")["tags"], [])
 
 
 if __name__ == "__main__":

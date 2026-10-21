@@ -117,6 +117,28 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured, {"query": "What changed?", "k": 5, "sources": ["document-1"]})
 
+    def test_chat_filters_are_validated_and_forwarded(self):
+        captured = {}
+
+        def answer(query, k=3, sources=None, filters=None):
+            captured.update({"filters": filters})
+            return {"answer": "filtered", "sources": []}
+
+        with patch.object(main, "answer_query", answer):
+            response = self.client.post("/api/chat", json={"query": "What changed?", "filters": {"pages": [3], "content_types": ["table"]}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["filters"].pages, [3])
+        self.assertEqual(captured["filters"].content_types, ["table"])
+        self.assertEqual(self.client.post("/api/chat", json={"query": "Bad", "filters": {"pages": [0]}}).status_code, 422)
+
+    def test_document_tags_can_be_updated_on_ready_documents(self):
+        database.add_document("report.pdf", doc_id="document-1")
+        response = self.client.patch("/api/documents/document-1/tags", json={"tags": [" Finance ", "2026"]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["tags"], ["Finance", "2026"])
+        self.assertEqual(self.client.get("/api/documents").json()[0]["tags"], ["Finance", "2026"])
+        self.assertEqual(self.client.patch("/api/documents/document-1/tags", json={"tags": [""]}).status_code, 422)
+
     def test_chat_stream_persists_a_retryable_failure_message(self):
         def stream(query, k=3, sources=None):
             yield f"data: {json.dumps({'type': 'error', 'message': 'model unavailable'})}\n\n"
