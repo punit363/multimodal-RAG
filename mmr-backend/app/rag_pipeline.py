@@ -3,6 +3,8 @@
 import os
 import json
 import math
+import re
+from types import SimpleNamespace
 from typing import List, Dict, Any, Generator, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -21,10 +23,12 @@ from app.database import list_documents
 from app.retrieval_filters import RetrievalFilters, eligible_chunk_ids
 from app.ranking import cosine_similarity, keyword_rank, reciprocal_rank_fusion, rerank_diverse, tokenize
 from app.query_rewrite import rewrite_followup_query
+from app.structured_index import structured_chunks, table_search_text
 
 load_dotenv()
 
 PERSIST_DIR = "db/chroma_db"
+UNVERIFIED_COMPARISON_ANSWER = "The comparison could not be verified against every selected document. Try a more specific question."
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 vectorstore = Chroma(
@@ -83,13 +87,11 @@ def partition_documents(file_path: str):
 
 
 def create_chunks_by_title(elements):
-    """Create title-based chunks."""
-    return chunk_by_title(
-        elements,
-        max_characters=3000,
-        new_after_n_chars=2400,
+    """Create chunks within PDF page and section boundaries."""
+    return structured_chunks(elements, lambda group: chunk_by_title(
+        group, max_characters=3000, new_after_n_chars=2400,
         combine_text_under_n_chars=500,
-    )
+    ))
 
 
 def separate_content_types(chunk) -> Dict[str, Any]:
@@ -154,46 +156,63 @@ def create_ai_enhanced_summary(text: str, tables: List[str], images: List[str]) 
 def build_documents(
     chunks, filename: str, document_id: Optional[str] = None
 ) -> List[Document]:
-    """Turn chunks into LangChain Documents tagged with the source filename.
-
-    The `filename` metadata is what source selection and delete rely on.
-    """
+    """Index text, tables, and image descriptions with their PDF evidence."""
     source_id = document_id or filename
     documents: List[Document] = []
     for i, chunk in enumerate(chunks):
         content_data = separate_content_types(chunk)
-        location = source_location(chunk)
+        metadata = getattr(chunk, "metadata", None)
+        elements = list(getattr(metadata, "orig_elements", None) or [])
+        section_index = getattr(metadata, "section_index", i)
+        section_title = getattr(metadata, "section_title", "Untitled section")
+        parent_id = f"{source_id}::section:{section_index}"
+        text_elements = [element for element in elements if type(element).__name__ not in {"Table", "Image"}]
+        text = "\n".join(str(element.text) for element in text_elements if getattr(element, "text", "").strip())
+        if not elements:
+            text = content_data["text"]
+        representations: List[Tuple[str, str, Any, Dict[str, Any]]] = []
+        if text.strip():
+            representations.append(("text", text, text_elements or chunk, {
+                "raw_text": text, "tables_html": [], "images_base64": [],
+            }))
+        for index, table in enumerate(content_data["tables"]):
+            table_elements = [element for element in elements if type(element).__name__ == "Table"]
+            evidence = table_elements[index] if index < len(table_elements) else chunk
+            search_text = table_search_text(table) or str(getattr(evidence, "text", ""))
+            representations.append(("table", search_text, evidence, {
+                "raw_text": "", "tables_html": [table], "images_base64": [],
+            }))
+        for index, image in enumerate(content_data["images"]):
+            image_elements = [element for element in elements if type(element).__name__ == "Image"]
+            evidence = image_elements[index] if index < len(image_elements) else chunk
+            description = create_ai_enhanced_summary("", [], [image]) or str(getattr(evidence, "text", "")) or "Image"
+            representations.append(("image", description, evidence, {
+                "raw_text": "", "tables_html": [], "images_base64": [image],
+            }))
 
-        if content_data["tables"] or content_data["images"]:
-            enhanced_content = create_ai_enhanced_summary(
-                content_data["text"], content_data["tables"], content_data["images"]
+        for representation_index, (kind, search_text, evidence, original) in enumerate(representations):
+            if not search_text.strip():
+                continue
+            location = source_location(
+                SimpleNamespace(metadata=SimpleNamespace(orig_elements=evidence))
+                if isinstance(evidence, list) else evidence
             )
-        else:
-            enhanced_content = content_data["text"]
-
-        documents.append(
-            Document(
-                page_content=enhanced_content,
-                metadata={
-                    "filename": filename,
-                    "document_id": source_id,
-                    "chunk_index": i,
-                    "chunk_id": f"{source_id}::{i}",
-                    "page_numbers": json.dumps(location["page_numbers"]),
-                    "page_location_status": location["page_location_status"],
-                    "element_types": json.dumps(location["element_types"]),
-                    "content_types": json.dumps(sorted(content_data["types"])),
-                    "highlight_rect": json.dumps(location["highlight_rect"]),
-                    "original_content": json.dumps(
-                        {
-                            "raw_text": content_data["text"],
-                            "tables_html": content_data["tables"],
-                            "images_base64": content_data["images"],
-                        }
-                    ),
-                },
-            )
-        )
+            chunk_id = f"{parent_id}::chunk:{i}::{kind}:{representation_index}"
+            documents.append(Document(page_content=search_text, metadata={
+                "filename": filename,
+                "document_id": source_id,
+                "chunk_index": i,
+                "chunk_id": chunk_id,
+                "parent_id": parent_id,
+                "section_title": section_title,
+                "representation_type": kind,
+                "page_numbers": json.dumps(location["page_numbers"]),
+                "page_location_status": location["page_location_status"],
+                "element_types": json.dumps(location["element_types"]),
+                "content_types": json.dumps([kind]),
+                "highlight_rect": json.dumps(location["highlight_rect"]),
+                "original_content": json.dumps(original),
+            }))
     return documents
 
 
@@ -358,6 +377,10 @@ def _build_context(
         page_label = f", p.{page_numbers[0]}" if len(page_numbers) == 1 else ""
 
         context += f"--- Source [[source:{chunk_id}]] [{filename}{page_label}] ---\n"
+        if doc.metadata.get("section_title"):
+            context += f"SECTION: {doc.metadata['section_title']}\n"
+        if doc.metadata.get("representation_type"):
+            context += f"EVIDENCE TYPE: {doc.metadata['representation_type']}\n"
         if original.get("raw_text"):
             context += f"TEXT:\n{original['raw_text']}\n\n"
         for j, table in enumerate(original.get("tables_html", [])):
@@ -372,6 +395,9 @@ def _build_context(
         sources.append(
             {
                 "chunk_id": chunk_id,
+                "parent_id": doc.metadata.get("parent_id"),
+                "section_title": doc.metadata.get("section_title"),
+                "representation_type": doc.metadata.get("representation_type"),
                 "document_id": document_id,
                 "filename": filename,
                 "page_numbers": page_numbers,
@@ -405,14 +431,54 @@ def _retrieval_query(query: str, history: Optional[List[Dict[str, str]]]) -> str
         query, history, lambda prompt: llm.invoke([HumanMessage(content=prompt)]).content
     )
 
+
+def _answer_evidence(
+    query: str, k: int, sources: Optional[List[str]],
+    filters: Optional[RetrievalFilters], history: Optional[List[Dict[str, str]]],
+    mode: str,
+) -> List[Tuple[Document, float]]:
+    """Collect evidence from every selected document in comparison mode."""
+    retrieval_query = _retrieval_query(query, history)
+    if mode != "compare":
+        return _retrieve(retrieval_query, k, sources, filters)
+    if not sources or not 2 <= len(sources) <= 4 or len(set(sources)) != len(sources):
+        raise ValueError("Comparison requires two to four distinct selected documents.")
+    evidence: List[Tuple[Document, float]] = []
+    for source_id in sources:
+        matches = _retrieve(retrieval_query, min(k, 3), [source_id], filters)
+        if not matches:
+            return []
+        evidence.extend(matches)
+    return evidence
+
+
+def _answer_instruction(mode: str) -> str:
+    if mode == "compare":
+        return (
+            "Compare the selected documents in a concise table with one row per document, "
+            "then state similarities and differences. Cite each document-specific claim "
+            "with its exact [[source:chunk_id]] marker. Mark missing facts as unavailable; "
+            "do not infer agreement or differences without evidence from both documents."
+        )
+    return "Cite supported claims using the exact [[source:chunk_id]] marker shown with each source."
+
+
+def _comparison_is_cited(answer: str, sources: List[Dict[str, Any]], selected: List[str]) -> bool:
+    """Require at least one registered citation from each compared document."""
+    cited = set(re.findall(r"\[\[source:([^\]]+)\]\]", answer))
+    registered = {str(source["chunk_id"]): source["document_id"] for source in sources}
+    return bool(cited) and cited.issubset(registered) and set(selected).issubset(
+        {registered[chunk_id] for chunk_id in cited}
+    )
+
 def answer_query(
     query: str, k: int = 3, sources: Optional[List[str]] = None,
     filters: Optional[RetrievalFilters] = None,
     history: Optional[List[Dict[str, str]]] = None,
+    mode: str = "answer",
 ) -> Dict[str, Any]:
     """Non-streaming answer."""
-    retrieval_query = _retrieval_query(query, history)
-    docs = _retrieve(retrieval_query, k, sources, filters)
+    docs = _answer_evidence(query, k, sources, filters, history, mode)
     if not docs:
         return {"answer": INSUFFICIENT_EVIDENCE_ANSWER, "sources": [], "insufficient_evidence": True}
     context, image_parts, formatted_sources = _build_context(docs)
@@ -420,10 +486,13 @@ def answer_query(
     prompt_text = (
         f"Based on the following documents, please answer this question: {query}\n\n"
         f"CONTENT TO ANALYZE:\n{context}\n"
-        "Cite supported claims using the exact [[source:chunk_id]] marker shown with each source.\nANSWER:"
+        f"{_answer_instruction(mode)}\nANSWER:"
     )
     message_content = [{"type": "text", "text": prompt_text}, *image_parts]
     response = llm.invoke([HumanMessage(content=message_content)])
+
+    if mode == "compare" and not _comparison_is_cited(str(response.content), formatted_sources, sources or []):
+        return {"answer": UNVERIFIED_COMPARISON_ANSWER, "sources": formatted_sources, "insufficient_evidence": True}
 
     return {"answer": response.content, "sources": formatted_sources}
 
@@ -434,14 +503,14 @@ def answer_query_stream(
     sources: Optional[List[str]] = None,
     filters: Optional[RetrievalFilters] = None,
     history: Optional[List[Dict[str, str]]] = None,
+    mode: str = "answer",
 ) -> Generator[str, None, None]:
     """Stream SSE events: one `sources` event, many `token` events, then `done`.
 
     If `sources` (a list of filenames) is given, retrieval is restricted to them.
     """
     try:
-        retrieval_query = _retrieval_query(query, history)
-        docs = _retrieve(retrieval_query, k, sources, filters)
+        docs = _answer_evidence(query, k, sources, filters, history, mode)
         if not docs:
             yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
             yield f"data: {json.dumps({'type': 'token', 'token': INSUFFICIENT_EVIDENCE_ANSWER})}\n\n"
@@ -454,7 +523,7 @@ def answer_query_stream(
         system_prompt = (
             "You are an expert AI assistant performing RAG analysis over multi-modal context.\n"
             "Answer the user query based ONLY on the provided contextual chunks.\n"
-            "Cite each supported claim with the exact [[source:chunk_id]] marker shown in context.\n"
+            f"{_answer_instruction(mode)}\n"
             "If the context does not contain the answer, say so.\n\n"
             f"Context:\n{context or 'No matching document context found.'}"
         )
@@ -463,9 +532,17 @@ def answer_query_stream(
             HumanMessage(content=[{"type": "text", "text": query}, *image_parts]),
         ]
 
-        for chunk in llm.stream(messages):
-            if chunk.content:
-                yield f"data: {json.dumps({'type': 'token', 'token': chunk.content})}\n\n"
+        if mode == "compare":
+            answer = "".join(str(chunk.content) for chunk in llm.stream(messages) if chunk.content)
+            if not _comparison_is_cited(answer, formatted_sources, sources or []):
+                yield f"data: {json.dumps({'type': 'token', 'token': UNVERIFIED_COMPARISON_ANSWER})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'insufficient_evidence': True})}\n\n"
+                return
+            yield f"data: {json.dumps({'type': 'token', 'token': answer})}\n\n"
+        else:
+            for chunk in llm.stream(messages):
+                if chunk.content:
+                    yield f"data: {json.dumps({'type': 'token', 'token': chunk.content})}\n\n"
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
     except Exception as e:
