@@ -9,6 +9,8 @@ Create a private, fixed PDF corpus and ingest it into an isolated backend. Copy 
 {"id":"case-002","query":"What is the policy on Mars?","answerable":false,"relevant_chunk_ids":[]}
 ```
 
+Each case may include `sources`, a list of immutable document IDs to restrict retrieval in the non-streaming chat API. Omit it to search all indexed documents. This is useful for comparing like-for-like runs when an isolated corpus contains additional documents.
+
 Include text, table, image, multi-turn, cross-document, and deliberately unsupported questions. Review the evidence manually before marking chunks relevant. Keep the corpus, indexed document IDs, case file, model configuration, and `k` fixed across runs. A new ingestion creates new document IDs, so remap the gold IDs before comparison. Do not commit private PDFs or answer content.
 
 From `mmr-backend`, capture a baseline with the running API (this invokes the answer model and may incur API charges):

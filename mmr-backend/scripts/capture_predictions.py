@@ -24,7 +24,11 @@ def main() -> None:
     for case in cases:
         request = Request(
             url,
-            data=json.dumps({"query": case["query"], "top_k": args.k}).encode("utf-8"),
+            data=json.dumps({
+                "query": case["query"],
+                "top_k": args.k,
+                "sources": case.get("sources"),
+            }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )

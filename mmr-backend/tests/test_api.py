@@ -18,7 +18,7 @@ fake_rag_pipeline.partition_documents = lambda path: []
 fake_rag_pipeline.create_chunks_by_title = lambda elements: []
 fake_rag_pipeline.build_documents = lambda chunks, filename, document_id=None: []
 fake_rag_pipeline.store_documents = lambda documents: None
-fake_rag_pipeline.answer_query = lambda query, k=3: {"answer": "stub", "sources": []}
+fake_rag_pipeline.answer_query = lambda query, k=3, sources=None: {"answer": "stub", "sources": []}
 fake_rag_pipeline.answer_query_stream = lambda query, k=3, sources=None: iter(())
 fake_rag_pipeline.delete_document_vectors = lambda filename: True
 sys.modules["app.rag_pipeline"] = fake_rag_pipeline
@@ -101,6 +101,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(messages[0]["content"], "What changed?")
         self.assertEqual(messages[1]["content"], "Grounded answer")
         self.assertEqual(messages[1]["sources"], [source])
+
+    def test_non_stream_chat_forwards_document_filter(self):
+        captured = {}
+
+        def answer(query, k=3, sources=None):
+            captured.update({"query": query, "k": k, "sources": sources})
+            return {"answer": "filtered", "sources": []}
+
+        with patch.object(main, "answer_query", answer):
+            response = self.client.post(
+                "/api/chat",
+                json={"query": "What changed?", "top_k": 5, "sources": ["document-1"]},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured, {"query": "What changed?", "k": 5, "sources": ["document-1"]})
 
     def test_chat_stream_persists_a_retryable_failure_message(self):
         def stream(query, k=3, sources=None):

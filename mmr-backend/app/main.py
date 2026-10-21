@@ -84,6 +84,7 @@ os.makedirs(QUARANTINE_DIR, exist_ok=True)
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 3
+    sources: Optional[List[str]] = None
 
 
 class StreamQueryRequest(BaseModel):
@@ -278,7 +279,7 @@ def chat_query(request: QueryRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query string cannot be empty.")
     try:
-        return answer_query(request.query, k=request.top_k)
+        return answer_query(request.query, k=request.top_k, sources=request.sources or None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution failed: {e}")
 
