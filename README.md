@@ -116,6 +116,10 @@ Phase 3 adds `RAG_RETRIEVAL_MODE=hybrid` (the default) to combine normalized cos
 
 The chat filter bar narrows evidence by selected documents, PDF page, content type, upload date, and document tags. Tags can be edited beside each ready document. Date bounds are inclusive. Missing page or content-type metadata does not match a requested filter, so re-ingest older PDFs before applying those filters. The benchmark instructions and fixture-only results are in the [evaluation guide](mmr-backend/evaluation/README.md).
 
+Newly ingested PDFs are chunked within page and section boundaries. Text, table-cell text, and image descriptions get separate searchable vectors with a shared section parent ID and distinct citation IDs. Source cards identify the document, section, evidence type, and available PDF page. Re-ingest existing PDFs to gain this index layout; existing vectors remain readable until then. Image descriptions use the configured model during ingestion, so image-heavy PDFs can require more processing and API usage.
+
+Enable **Compare selected documents** in chat after selecting two to four ready PDFs. The backend retrieves evidence from each selected document and requires registered citations from every document in the generated comparison. If one document has no matching evidence, it returns the insufficient-evidence response; if the generated comparison omits a document citation, it shows a verification failure instead. The non-streaming API also accepts `"mode": "compare"` with two to four distinct `sources` IDs. Representative comparison quality has not been measured because that evaluation was deferred.
+
 ## Runtime safety behavior
 
 - Uploads are checked for PDF extension, MIME type, signature, size, readability, encryption, and page count before ingestion.

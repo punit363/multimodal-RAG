@@ -102,7 +102,7 @@ After completing each priority, update the Phase 2 Notion page with implemented 
 
 ## Phase 3 — Retrieval Quality
 
-**Status:** In progress — Low and Medium features implemented October 21, 2026; representative quality evaluation deferred at the user's request.
+**Status:** In progress — Low, Medium, and High features implemented October 21, 2026; representative quality evaluation deferred at the user's request.
 
 **Objective:** Improve factual accuracy for difficult, follow-up, and cross-document questions. The [Phase 3 engineering log](https://app.notion.com/p/3fa7cd5908fc81eda42bfc938e72f64c) records evidence after each priority. Execute Low → Medium → High, using multiple reviewable commits within each priority.
 
@@ -127,11 +127,13 @@ After completing each priority, update the Phase 2 Notion page with implemented 
 
 ### High priority — document structure and synthesis
 
-- [ ] Add section- and page-aware hierarchical chunking with stable source and parent identities.
-- [ ] Index separate searchable representations for text, tables, and images while preserving citation links to the original PDF evidence.
-- [ ] Add an explicit cross-document comparison mode with cited claims from each compared document.
+- [x] Add section- and page-aware hierarchical chunking with stable source and parent identities.
+- [x] Index separate searchable representations for text, tables, and images while preserving citation links to the original PDF evidence.
+- [x] Add an explicit cross-document comparison mode with cited claims from each compared document.
 
 **Acceptance:** Cross-document and multimodal cases in the fixed evaluation set show a measurable improvement over the Phase 2 baseline; citations still resolve to real evidence. Automated tests cover ingestion, retrieval, and comparison.
+
+**Implementation and validation:** PDF elements are chunked within page and title boundaries, with a stable section parent ID and separate text, table, and image-description vectors. Each representation keeps its own PDF page/location and original evidence for citation. Comparison mode requires two to four selected documents, retrieves evidence from each, and withholds answers that omit a registered citation from any selected document. Backend tests, frontend component checks, a Chromium comparison flow, lint, and the webpack production build pass. Existing PDFs must be re-ingested for the new index layout. Representative quality improvement remains unmeasured because that evaluation was deferred; High-priority acceptance is therefore still open. The implementation is recorded in separate backend, API/UI, and documentation commits.
 
 ### Execution record for every priority
 
