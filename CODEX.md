@@ -102,14 +102,14 @@ After completing each priority, update the Phase 2 Notion page with implemented 
 
 ## Phase 3 — Retrieval Quality
 
-**Status:** In progress — Low priority started October 21, 2026.
+**Status:** In progress — Low and Medium implementation underway October 21, 2026; representative quality evaluation remains open.
 
 **Objective:** Improve factual accuracy for difficult, follow-up, and cross-document questions. The [Phase 3 engineering log](https://app.notion.com/p/3fa7cd5908fc81eda42bfc938e72f64c) records evidence after each priority. Execute Low → Medium → High, using multiple reviewable commits within each priority.
 
 ### Low priority — measurement and controlled scope
 
 - [ ] Add a fixed, versioned evaluation case format and repeatable retrieval/citation/answer-quality reporting. Record the Phase 2 baseline before tuning thresholds.
-- [ ] Add retrieval filters for selected documents, pages, dates, content types, and tags, with validation and honest handling of missing legacy metadata.
+- [x] Add retrieval filters for selected documents, pages, dates, content types, and tags, with validation and honest handling of missing legacy metadata.
 
 **Acceptance:** A representative dataset can measure recall, citation correctness, groundedness, and answer quality. Filtered queries return only matching evidence in both chat paths, and invalid filters fail clearly.
 
@@ -117,7 +117,7 @@ After completing each priority, update the Phase 2 Notion page with implemented 
 
 - [ ] Combine semantic and keyword retrieval, comparing its results with the fixed Phase 2 baseline.
 - [ ] Rerank a bounded candidate set after initial retrieval and measure the effect on recall and citation correctness.
-- [ ] Rewrite follow-up queries using bounded conversation context while retaining the original user question for answer generation.
+- [x] Rewrite follow-up queries using bounded conversation context while retaining the original user question for answer generation.
 
 **Acceptance:** Hybrid and reranked stages improve measured quality without regressing unsupported-answer behavior. Automated multi-turn tests cover resolved references and source isolation.
 

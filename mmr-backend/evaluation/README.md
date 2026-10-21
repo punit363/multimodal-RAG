@@ -29,3 +29,16 @@ The capture command only writes a complete run. The scorer requires one predicti
 `retrieval_recall_at_k` is the mean fraction of each answerable question's gold chunks found in the first `k` results. `mean_reciprocal_rank_at_k` measures how early the first gold chunk appears. `citation_precision` is the share of unique cited chunk IDs that are both retrieved and labeled relevant; it does **not** prove claim-level support. `abstention_accuracy` measures whether the response abstains on unanswerable questions and answers answerable ones. Human groundedness and answer-quality ratings are reported separately. A null metric means there is no suitable denominator, not a zero score.
 
 For a smoke test of the scorer, run it with `evaluation/example_cases.jsonl` and `evaluation/example_predictions.jsonl`. Do not compare that report against live results.
+
+## Fixed retrieval fixture
+
+`fixture_corpus.jsonl` contains seven synthetic chunks spanning policy prose, table-like financial data, OCR processing, and an image-description chunk. `fixture_cases.jsonl` contains six labeled questions, including a two-chunk comparison and one unsupported question. This fixture is useful for detecting retrieval regressions; it bypasses PDF extraction and answer generation, so it is **not** a representative PDF or answer-quality benchmark.
+
+With a configured OpenAI API key, run the three retrieval configurations in an isolated temporary Chroma collection:
+
+```bash
+venv/bin/python -m scripts.fixture_benchmark --output-dir /tmp/mmr-phase3-k3 --k 3
+venv/bin/python -m scripts.fixture_benchmark --output-dir /tmp/mmr-phase3-k1 --k 1
+```
+
+The script writes predictions and full reports to the chosen output directory, never the application's document registry or persistent index. It makes paid embedding API calls. On October 21, 2026, semantic-only, hybrid, and hybrid-plus-reranking all measured recall@3 = 1.00 and abstention accuracy = 1.00 on this small fixture. At `k=1`, all three measured mean recall = 0.80 and abstention accuracy = 1.00; two cases require two gold chunks, so top-1 cannot reach perfect recall. Citation precision, groundedness, and answer quality were unscored because this is a retrieval-only run. The fixture showed **no measured improvement** over the Phase 2 semantic baseline. A representative, manually reviewed PDF corpus is still needed before tuning thresholds or claiming quality gains.

@@ -1,0 +1,6 @@
+{"id":"policy-meals","query":"What is the 2026 daily meal reimbursement limit?","answerable":true,"relevant_chunk_ids":["policy::0"]}
+{"id":"policy-approval","query":"Who approves international flights?","answerable":true,"relevant_chunk_ids":["policy::1"]}
+{"id":"sales-comparison","query":"Compare Q1 and Q2 2026 revenue.","answerable":true,"relevant_chunk_ids":["sales::0","sales::1"]}
+{"id":"ocr-tables","query":"How are scanned PDF tables processed?","answerable":true,"relevant_chunk_ids":["architecture::0","architecture::1"]}
+{"id":"diagram","query":"What stages appear in the architecture diagram?","answerable":true,"relevant_chunk_ids":["architecture::2"]}
+{"id":"unsupported","query":"What is the rent for the Mars office?","answerable":false,"relevant_chunk_ids":[]}
