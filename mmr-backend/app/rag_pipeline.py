@@ -20,6 +20,7 @@ from app.grounding import INSUFFICIENT_EVIDENCE_ANSWER, minimum_relevance_score,
 from app.database import list_documents
 from app.retrieval_filters import RetrievalFilters, eligible_chunk_ids
 from app.ranking import cosine_similarity, keyword_rank, reciprocal_rank_fusion, rerank_diverse, tokenize
+from app.query_rewrite import rewrite_followup_query
 
 load_dotenv()
 
@@ -397,12 +398,21 @@ def _build_context(
 # Answering
 # ---------------------------------------------------------------------------
 
+def _retrieval_query(query: str, history: Optional[List[Dict[str, str]]]) -> str:
+    if os.getenv("RAG_QUERY_REWRITE_ENABLED", "true").strip().lower() != "true":
+        return query
+    return rewrite_followup_query(
+        query, history, lambda prompt: llm.invoke([HumanMessage(content=prompt)]).content
+    )
+
 def answer_query(
     query: str, k: int = 3, sources: Optional[List[str]] = None,
     filters: Optional[RetrievalFilters] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Non-streaming answer."""
-    docs = _retrieve(query, k, sources, filters)
+    retrieval_query = _retrieval_query(query, history)
+    docs = _retrieve(retrieval_query, k, sources, filters)
     if not docs:
         return {"answer": INSUFFICIENT_EVIDENCE_ANSWER, "sources": [], "insufficient_evidence": True}
     context, image_parts, formatted_sources = _build_context(docs)
@@ -423,13 +433,15 @@ def answer_query_stream(
     k: int = 3,
     sources: Optional[List[str]] = None,
     filters: Optional[RetrievalFilters] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> Generator[str, None, None]:
     """Stream SSE events: one `sources` event, many `token` events, then `done`.
 
     If `sources` (a list of filenames) is given, retrieval is restricted to them.
     """
     try:
-        docs = _retrieve(query, k, sources, filters)
+        retrieval_query = _retrieval_query(query, history)
+        docs = _retrieve(retrieval_query, k, sources, filters)
         if not docs:
             yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
             yield f"data: {json.dumps({'type': 'token', 'token': INSUFFICIENT_EVIDENCE_ANSWER})}\n\n"

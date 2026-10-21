@@ -28,6 +28,7 @@ from app.database import (
     init_db,
     create_conversation,
     get_all_conversations,
+    get_recent_messages,
     save_message,
     update_message_content,
     set_message_feedback,
@@ -83,11 +84,17 @@ os.makedirs(QUARANTINE_DIR, exist_ok=True)
 # Request models
 # ---------------------------------------------------------------------------
 
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=500)
+
+
 class QueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=3, ge=1, le=20)
     sources: Optional[List[str]] = None
     filters: Optional[RetrievalFilters] = None
+    history: List[HistoryMessage] = Field(default_factory=list, max_length=6)
 
 
 class StreamQueryRequest(BaseModel):
@@ -296,6 +303,8 @@ def chat_query(request: QueryRequest):
         raise HTTPException(status_code=400, detail="Query string cannot be empty.")
     try:
         options = {"filters": request.filters} if request.filters and request.filters.active() else {}
+        if request.history:
+            options["history"] = [message.model_dump() for message in request.history]
         return answer_query(request.query, k=request.top_k, sources=request.sources or None, **options)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution failed: {e}")
@@ -313,6 +322,7 @@ def chat_query_stream(request: StreamQueryRequest):
 
     # 1. Make sure the conversation exists
     create_conversation(request.conversation_id, request.query[:25])
+    history = get_recent_messages(request.conversation_id)
 
     # 2. Save the user message right away
     save_message(
@@ -337,6 +347,8 @@ def chat_query_stream(request: StreamQueryRequest):
 
         try:
             options = {"filters": request.filters} if request.filters and request.filters.active() else {}
+            if history:
+                options["history"] = history
             for sse_line in answer_query_stream(
                 request.query, k=request.top_k, sources=request.sources or None, **options
             ):

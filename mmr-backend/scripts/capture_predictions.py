@@ -29,6 +29,7 @@ def main() -> None:
                 "top_k": args.k,
                 "sources": case.get("sources"),
                 "filters": case.get("filters"),
+                "history": case.get("history", []),
             }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",

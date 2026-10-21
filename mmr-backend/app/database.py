@@ -158,6 +158,18 @@ def get_all_conversations() -> List[Dict[str, Any]]:
     return conversations
 
 
+def get_recent_messages(conv_id: str, limit: int = 6) -> List[Dict[str, str]]:
+    """Return a bounded, chronologically ordered history from one conversation."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT role, content FROM messages WHERE conversation_id = ?
+               AND role IN ('user', 'assistant') AND content != ''
+               ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            (conv_id, min(max(limit, 0), 6)),
+        ).fetchall()
+    return [{"role": role, "content": content[:500]} for role, content in reversed(rows)]
+
+
 def save_message(
     msg_id: str,
     conv_id: str,

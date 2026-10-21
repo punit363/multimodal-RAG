@@ -45,6 +45,18 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(conversations[0]["messages"][0]["content"], "Updated answer")
         self.assertEqual(conversations[0]["messages"][0]["sources"], sources)
 
+    def test_recent_history_is_bounded_and_conversation_scoped(self):
+        database.create_conversation("first", "First")
+        database.create_conversation("second", "Second")
+        for index in range(8):
+            database.save_message(f"first-{index}", "first", "user", f"Question {index}")
+        database.save_message("second-1", "second", "user", "Private other topic")
+        history = database.get_recent_messages("first")
+        self.assertEqual(len(history), 6)
+        self.assertEqual(history[0]["content"], "Question 2")
+        self.assertEqual(history[-1]["content"], "Question 7")
+        self.assertNotIn("Private other topic", str(history))
+
     def test_document_registry_allows_duplicate_display_names_and_deletion(self):
         first = database.add_document("report.pdf")
         second = database.add_document("report.pdf")

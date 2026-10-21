@@ -112,6 +112,8 @@ The completed Phase 1 and Phase 2 records and the prioritized Phase 3 roadmap ar
 
 Phase 3 adds `RAG_RETRIEVAL_MODE=hybrid` (the default) to combine normalized cosine and exact-term BM25 candidates with reciprocal-rank fusion. Set `RAG_RETRIEVAL_MODE=semantic` to reproduce the Phase 2 retrieval path. `RAG_RERANK_ENABLED=true` applies a bounded diversity reranker after fusion. The displayed source score remains cosine similarity, not the fused ranking score. Hybrid retrieval scans the local Chroma corpus for keyword candidates, so it is intended for the current local-scale MVP. Quality gains have not yet been measured against a representative fixed corpus.
 
+`RAG_QUERY_REWRITE_ENABLED=true` rewrites follow-up questions for retrieval using up to six previous messages from the same conversation. Only the retrieval query changes; the answer is generated for the original question. Disable it when measuring the Phase 2 baseline. Non-streaming evaluation cases can supply bounded `history` explicitly; streamed chat loads history from SQLite before saving the current question.
+
 ## Runtime safety behavior
 
 - Uploads are checked for PDF extension, MIME type, signature, size, readability, encryption, and page count before ingestion.

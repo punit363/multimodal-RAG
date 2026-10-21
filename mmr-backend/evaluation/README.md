@@ -13,6 +13,8 @@ Each case may include `sources`, a list of immutable document IDs to restrict re
 
 Cases may also include a `filters` object with `pages`, `content_types`, `created_from`, `created_to`, or `tags`. The capture command forwards it to the same retrieval path used by chat. Dates are inclusive ISO dates. Requested page and content-type filters exclude older chunks lacking that metadata; re-ingest those PDFs before testing filtered retrieval. Tags are attached to registered documents through `PATCH /api/documents/{id}/tags` or the chat sidebar.
 
+For follow-up cases, add `history` as up to six prior `{ "role": "user" | "assistant", "content": "..." }` turns. The capture command passes this to non-streaming chat; streamed chat loads its own bounded history from the saved conversation. The retrieval query may be rewritten, while the answer still uses the original question.
+
 Include text, table, image, multi-turn, cross-document, and deliberately unsupported questions. Review the evidence manually before marking chunks relevant. Keep the corpus, indexed document IDs, case file, model configuration, and `k` fixed across runs. A new ingestion creates new document IDs, so remap the gold IDs before comparison. Do not commit private PDFs or answer content.
 
 From `mmr-backend`, capture a baseline with the running API (this invokes the answer model and may incur API charges):
