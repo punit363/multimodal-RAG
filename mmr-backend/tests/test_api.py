@@ -166,6 +166,23 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured["history"], [{"role": "user", "content": "What is the 2025 budget?"}])
 
+    def test_stream_forwards_metadata_filters(self):
+        captured = {}
+
+        def stream(query, k=3, sources=None, filters=None):
+            captured["filters"] = filters
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        with patch.object(main, "answer_query_stream", stream):
+            response = self.client.post("/api/chat-stream", json={
+                "query": "Where is the table?", "conversation_id": "filtered-conversation",
+                "user_message_id": "filtered-question", "assistant_message_id": "filtered-answer",
+                "filters": {"pages": [2], "content_types": ["table"]},
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["filters"].pages, [2])
+        self.assertEqual(captured["filters"].content_types, ["table"])
+
     def test_document_tags_can_be_updated_on_ready_documents(self):
         database.add_document("report.pdf", doc_id="document-1")
         response = self.client.patch("/api/documents/document-1/tags", json={"tags": [" Finance ", "2026"]})

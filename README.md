@@ -103,16 +103,18 @@ The completed Phase 1 and Phase 2 records and the prioritized Phase 3 roadmap ar
 - Only PDF uploads are supported.
 - Authentication and workspace isolation are not implemented.
 - Ingestion runs within the API process and is intended for local MVP use.
-- Phase 2 is complete: cited PDF source navigation and insufficient-evidence responses; citation verification labels, retrieval similarity, and persistent answer feedback; source-location metadata, safe Markdown answers, and copy/export/regenerate/stop controls. Existing PDFs need re-ingestion for new element-type and location-status metadata. Retrieval-quality evaluation remains planned for Phase 3.
-- Source cards show normalized cosine retrieval similarity from 0 to 100%; scores below 50% are marked **Weak match**. This is a measure of question-to-chunk similarity, not answer correctness or model confidence. The backend currently excludes scores below 35% by default (`RAG_MIN_RELEVANCE_SCORE`); that cutoff is a heuristic pending Phase 3 evaluation.
+- Phase 2 is complete. Existing PDFs need re-ingestion for new element-type, location-status, and content-type metadata. A representative quality evaluation remains open in Phase 3.
+- Source cards show normalized cosine retrieval similarity from 0 to 100%; scores below 50% are marked **Weak match**. This measures question-to-chunk similarity, not answer correctness or model confidence.
 
 ## Answer grounding
 
-`RAG_MIN_RELEVANCE_SCORE` defaults to `0.35`. The score is the vector store's normalized cosine relevance measure, with larger values indicating a closer match. It is a retrieval heuristic, not a calibrated probability. When every retrieved chunk scores below the threshold, both chat endpoints return an explicit insufficient-evidence answer without calling the answer model. The threshold should be tuned against a representative evaluation set before treating it as a quality guarantee.
+`RAG_MIN_RELEVANCE_SCORE` defaults to `0.35`. The score is the vector store's normalized cosine relevance measure, with larger values indicating a closer match. It is a retrieval heuristic, not a calibrated probability. Semantic candidates below this threshold are excluded. Hybrid mode may also accept exact-term keyword candidates with at least 75% meaningful query-term coverage and cosine similarity of at least `RAG_MIN_RELEVANCE_SCORE - 0.10`. Both chat paths return an explicit insufficient-evidence answer when neither gate admits a candidate. Tune these heuristics against a representative evaluation set before treating them as quality guarantees.
 
 Phase 3 adds `RAG_RETRIEVAL_MODE=hybrid` (the default) to combine normalized cosine and exact-term BM25 candidates with reciprocal-rank fusion. Set `RAG_RETRIEVAL_MODE=semantic` to reproduce the Phase 2 retrieval path. `RAG_RERANK_ENABLED=true` applies a bounded diversity reranker after fusion. The displayed source score remains cosine similarity, not the fused ranking score. Hybrid retrieval scans the local Chroma corpus for keyword candidates, so it is intended for the current local-scale MVP. Quality gains have not yet been measured against a representative fixed corpus.
 
 `RAG_QUERY_REWRITE_ENABLED=true` rewrites follow-up questions for retrieval using up to six previous messages from the same conversation. Only the retrieval query changes; the answer is generated for the original question. Disable it when measuring the Phase 2 baseline. Non-streaming evaluation cases can supply bounded `history` explicitly; streamed chat loads history from SQLite before saving the current question.
+
+The chat filter bar narrows evidence by selected documents, PDF page, content type, upload date, and document tags. Tags can be edited beside each ready document. Date bounds are inclusive. Missing page or content-type metadata does not match a requested filter, so re-ingest older PDFs before applying those filters. The benchmark instructions and fixture-only results are in the [evaluation guide](mmr-backend/evaluation/README.md).
 
 ## Runtime safety behavior
 

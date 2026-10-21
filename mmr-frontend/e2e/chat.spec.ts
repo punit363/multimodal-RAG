@@ -109,6 +109,28 @@ test("passes page, content, date and tag filters with selected documents", async
   });
 });
 
+test("edits document tags and offers the new tag as a filter", async ({ page }) => {
+  let tags: string[] = [];
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/conversations") return route.fulfill({ json: [] });
+    if (pathname === "/api/documents" && route.request().method() === "GET") {
+      return route.fulfill({ json: [{ id: "doc-1", filename: "report.pdf", status: "ready", tags }] });
+    }
+    if (pathname === "/api/documents/doc-1/tags" && route.request().method() === "PATCH") {
+      tags = route.request().postDataJSON().tags;
+      return route.fulfill({ json: { id: "doc-1", filename: "report.pdf", status: "ready", tags } });
+    }
+    return route.abort();
+  });
+  page.on("dialog", (dialog) => void dialog.accept("Finance, 2026"));
+  await page.goto("/chat");
+  await page.getByRole("button", { name: "Edit tags for report.pdf" }).click();
+  await expect(page.getByRole("button", { name: "Edit tags for report.pdf" })).toHaveText("2 tags");
+  await expect(page.getByLabel("Filter by tag").locator("option[value='Finance']")).toHaveCount(1);
+  expect(tags).toEqual(["Finance", "2026"]);
+});
+
 test("shows a retry action after a streamed answer fails", async ({ page }) => {
   let chatAttempts = 0;
   await page.route("http://localhost:8000/api/**", async (route) => {
