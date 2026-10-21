@@ -102,7 +102,7 @@ After completing each priority, update the Phase 2 Notion page with implemented 
 
 ## Phase 3 — Retrieval Quality
 
-**Status:** In progress — Low and Medium features implemented October 21, 2026; representative quality acceptance remains open.
+**Status:** In progress — Low and Medium features implemented October 21, 2026; representative quality evaluation deferred at the user's request.
 
 **Objective:** Improve factual accuracy for difficult, follow-up, and cross-document questions. The [Phase 3 engineering log](https://app.notion.com/p/3fa7cd5908fc81eda42bfc938e72f64c) records evidence after each priority. Execute Low → Medium → High, using multiple reviewable commits within each priority.
 
@@ -113,6 +113,8 @@ After completing each priority, update the Phase 2 Notion page with implemented 
 
 **Acceptance:** A representative dataset can measure recall, citation correctness, groundedness, and answer quality. Filtered queries return only matching evidence in both chat paths, and invalid filters fail clearly.
 
+**Evaluation decision (October 21, 2026):** Skip the representative PDF quality baseline for now. Do not use the existing local PDFs as an evaluation corpus. Keep the evaluation task and its acceptance criteria open; the synthetic retrieval fixture is the only measurement so far.
+
 ### Medium priority — stronger retrieval and follow-up questions
 
 - [x] Combine semantic and keyword retrieval, comparing its results with the fixed Phase 2 baseline on the synthetic fixture.
@@ -121,7 +123,7 @@ After completing each priority, update the Phase 2 Notion page with implemented 
 
 **Acceptance:** Hybrid and reranked stages improve measured quality without regressing unsupported-answer behavior. Automated multi-turn tests cover resolved references and source isolation.
 
-**Implementation and validation:** Document/page/date/type/tag filters and tag editing are wired through the API and chat UI. Hybrid retrieval uses BM25 candidate ranking, reciprocal-rank fusion, and a bounded diversity reranker; semantic-only and rewrite-disabled settings preserve a Phase 2 comparison mode. Follow-up retrieval uses at most six prior messages from the same conversation. The seven-chunk, six-question synthetic fixture measured recall@3 = 1.00 and abstention accuracy = 1.00 for semantic, hybrid, and reranked modes; recall@1 = 0.80 for all three. It showed no quality gain. The fixture bypasses PDF extraction and answer generation, so the representative baseline, citation correctness, groundedness, and answer quality are still unmeasured. Do not treat Low or Medium acceptance as complete until those checks pass.
+**Implementation and validation:** Document/page/date/type/tag filters and tag editing are wired through the API and chat UI. Hybrid retrieval uses BM25 candidate ranking, reciprocal-rank fusion, and a bounded diversity reranker; semantic-only and rewrite-disabled settings preserve a Phase 2 comparison mode. Follow-up retrieval uses at most six prior messages from the same conversation. The seven-chunk, six-question synthetic fixture measured recall@3 = 1.00 and abstention accuracy = 1.00 for semantic, hybrid, and reranked modes; recall@1 = 0.80 for all three. It showed no quality gain. The fixture bypasses PDF extraction and answer generation, so the representative baseline, citation correctness, groundedness, and answer quality are still unmeasured. Their evaluation is deferred at the user's request; Low and Medium quality acceptance remains open.
 
 ### High priority — document structure and synthesis
 
