@@ -110,6 +110,8 @@ The completed Phase 1 and Phase 2 records and the prioritized Phase 3 roadmap ar
 
 `RAG_MIN_RELEVANCE_SCORE` defaults to `0.35`. The score is the vector store's normalized cosine relevance measure, with larger values indicating a closer match. It is a retrieval heuristic, not a calibrated probability. When every retrieved chunk scores below the threshold, both chat endpoints return an explicit insufficient-evidence answer without calling the answer model. The threshold should be tuned against a representative evaluation set before treating it as a quality guarantee.
 
+Phase 3 adds `RAG_RETRIEVAL_MODE=hybrid` (the default) to combine normalized cosine and exact-term BM25 candidates with reciprocal-rank fusion. Set `RAG_RETRIEVAL_MODE=semantic` to reproduce the Phase 2 retrieval path. `RAG_RERANK_ENABLED=true` applies a bounded diversity reranker after fusion. The displayed source score remains cosine similarity, not the fused ranking score. Hybrid retrieval scans the local Chroma corpus for keyword candidates, so it is intended for the current local-scale MVP. Quality gains have not yet been measured against a representative fixed corpus.
+
 ## Runtime safety behavior
 
 - Uploads are checked for PDF extension, MIME type, signature, size, readability, encryption, and page count before ingestion.

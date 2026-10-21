@@ -2,6 +2,7 @@
 
 import os
 import json
+import math
 from typing import List, Dict, Any, Generator, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -15,9 +16,10 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 from app.security import sanitize_table_html
 from app.source_metadata import source_location
-from app.grounding import INSUFFICIENT_EVIDENCE_ANSWER, supported_results
+from app.grounding import INSUFFICIENT_EVIDENCE_ANSWER, minimum_relevance_score, supported_results
 from app.database import list_documents
 from app.retrieval_filters import RetrievalFilters, eligible_chunk_ids
+from app.ranking import cosine_similarity, keyword_rank, reciprocal_rank_fusion, rerank_diverse, tokenize
 
 load_dotenv()
 
@@ -242,37 +244,92 @@ def _original_content(doc: Document) -> Dict[str, Any]:
     return content
 
 
+def _semantic_candidates(
+    query: str, k: int, sources: Optional[List[str]], allowed_ids: Optional[List[str]]
+) -> List[Tuple[Document, float]]:
+    """Return normalized cosine scores, honoring an exact allowed chunk set."""
+    if allowed_ids is None:
+        return supported_results(vectorstore.similarity_search_with_relevance_scores(
+            query, k=k, filter=_source_filter(sources)
+        ))
+    if not allowed_ids:
+        return []
+    query_vector = embeddings.embed_query(query)
+    normalize_score = vectorstore._select_relevance_score_fn()
+    results: List[Tuple[Document, float]] = []
+    for offset in range(0, len(allowed_ids), 500):
+        batch = allowed_ids[offset:offset + 500]
+        results.extend(
+            (document, normalize_score(distance))
+            for document, distance in vectorstore.similarity_search_by_vector_with_relevance_scores(
+                query_vector, k=min(k, len(batch)), filter={"chunk_id": {"$in": batch}}
+            )
+        )
+    results.sort(key=lambda item: item[1], reverse=True)
+    return supported_results(results[:k])
+
+
 def _retrieve(
     query: str, k: int, sources: Optional[List[str]], filters: Optional[RetrievalFilters] = None
 ) -> List[Tuple[Document, float]]:
-    if filters and filters.active():
-        candidates = vectorstore._collection.get(
-            where=_source_filter(sources), include=["metadatas"]
-        )
-        allowed_ids = eligible_chunk_ids(
-            candidates.get("ids") or [], candidates.get("metadatas") or [],
-            list_documents(), filters,
-        )
-        if not allowed_ids:
-            return []
+    """Combine safe semantic and exact-term hits, then diversify bounded evidence."""
+    mode = os.getenv("RAG_RETRIEVAL_MODE", "hybrid").strip().lower()
+    if mode not in {"semantic", "hybrid"}:
+        raise ValueError("RAG_RETRIEVAL_MODE must be semantic or hybrid.")
+    active_filters = bool(filters and filters.active())
+    if mode == "semantic" and not active_filters:
+        return _semantic_candidates(query, k, sources, None)
+
+    candidates = vectorstore._collection.get(
+        where=_source_filter(sources), include=["documents", "metadatas"]
+    )
+    all_ids = candidates.get("ids") or []
+    all_metadata = candidates.get("metadatas") or []
+    allowed_ids = eligible_chunk_ids(all_ids, all_metadata, list_documents(), filters) if active_filters else all_ids
+    if not allowed_ids:
+        return []
+    semantic = _semantic_candidates(query, min(max(k * 5, 20), len(allowed_ids)), sources, allowed_ids if active_filters else None)
+    if mode == "semantic":
+        return semantic[:k]
+
+    allowed = set(allowed_ids)
+    texts = {
+        chunk_id: content or ""
+        for chunk_id, content in zip(all_ids, candidates.get("documents") or [])
+        if chunk_id in allowed
+    }
+    lexical = keyword_rank(query, texts, limit=20)
+    semantic_by_id = {
+        doc.metadata.get("chunk_id") or doc.id: (doc, score)
+        for doc, score in semantic
+    }
+    lexical_ids = [chunk_id for chunk_id, _, coverage in lexical if len(set(tokenize(query))) >= 2 and coverage >= 0.75]
+    lexical_scores: Dict[str, float] = {}
+    if lexical_ids:
         query_vector = embeddings.embed_query(query)
-        results: List[Tuple[Document, float]] = []
-        normalize_score = vectorstore._select_relevance_score_fn()
-        for offset in range(0, len(allowed_ids), 500):
-            batch = allowed_ids[offset:offset + 500]
-            results.extend(
-                (document, normalize_score(distance))
-                for document, distance in vectorstore.similarity_search_by_vector_with_relevance_scores(
-                    query_vector, k=min(k, len(batch)), filter={"chunk_id": {"$in": batch}}
-                )
+        stored = vectorstore._collection.get(ids=lexical_ids, include=["embeddings"])
+        stored_embeddings = stored.get("embeddings")
+        if stored_embeddings is not None:
+            lexical_scores = {
+                chunk_id: cosine_similarity(query_vector, vector)
+                for chunk_id, vector in zip(stored.get("ids") or [], stored_embeddings)
+            }
+    metadata_by_id = dict(zip(all_ids, all_metadata))
+    merged = dict(semantic_by_id)
+    lexical_floor = max(0.0, minimum_relevance_score() - 0.1)
+    for chunk_id in lexical_ids:
+        score = lexical_scores.get(chunk_id)
+        if score is not None and math.isfinite(score) and score >= lexical_floor and chunk_id not in merged:
+            merged[chunk_id] = (
+                Document(id=chunk_id, page_content=texts[chunk_id], metadata=metadata_by_id[chunk_id] or {}),
+                score,
             )
-        results.sort(key=lambda item: item[1], reverse=True)
-        results = results[:k]
-    else:
-        results = vectorstore.similarity_search_with_relevance_scores(
-            query, k=k, filter=_source_filter(sources)
-        )
-    return supported_results(results)
+    semantic_ids = list(semantic_by_id)
+    lexical_ids = [chunk_id for chunk_id in lexical_ids if chunk_id in merged]
+    ranked = reciprocal_rank_fusion([semantic_ids, lexical_ids])
+    if os.getenv("RAG_RERANK_ENABLED", "true").strip().lower() == "true":
+        ranked = rerank_diverse(ranked, texts, k)
+    return [merged[chunk_id] for chunk_id in ranked[:k]]
 
 
 def _build_context(
