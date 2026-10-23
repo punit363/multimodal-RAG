@@ -303,6 +303,8 @@ async def _save_and_validate_source(file: UploadFile, file_path: str, source_for
         if source_format in {"png", "jpg", "jpeg", "webp", "tiff"}:
             from PIL import Image
             with Image.open(file_path) as image:
+                if image.width * image.height > 40_000_000:
+                    raise HTTPException(status_code=413, detail="Image exceeds the 40 megapixel OCR limit.")
                 image.verify()
     except HTTPException:
         Path(file_path).unlink(missing_ok=True)

@@ -123,6 +123,8 @@ def extract_sections(path: str, source_format: str) -> list[StructuredChunk]:
     elif source_format in {"png", "jpg", "jpeg", "webp", "tiff"}:
         from PIL import Image
         with Image.open(path) as image:
+            if image.width * image.height > 40_000_000:
+                raise ValueError("Image exceeds the 40 megapixel OCR limit.")
             image.verify()
         result = subprocess.run(["tesseract", path, "stdout"], capture_output=True, text=True, timeout=60, check=False)
         if result.returncode:
