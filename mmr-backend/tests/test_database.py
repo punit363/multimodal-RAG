@@ -78,6 +78,28 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(database.get_document("tagged")["tags"], ["Finance", "2026"])
         self.assertFalse(database.set_document_tags("missing", ["Finance"]))
 
+    def test_source_sets_round_trip_and_prune_deleted_documents(self):
+        first = database.add_document("first.pdf", doc_id="first")
+        second = database.add_document("second.pdf", doc_id="second")
+        saved = database.create_source_set("Research", [first["id"], second["id"]])
+        database.init_db()
+        self.assertEqual(database.list_source_sets()[0]["document_ids"], ["first", "second"])
+        updated = database.update_source_set(saved["id"], "Latest", ["second", "first"])
+        self.assertEqual(updated["name"], "Latest")
+        self.assertEqual(updated["document_ids"], ["second", "first"])
+        database.delete_document_record("second")
+        self.assertEqual(database.list_source_sets()[0]["document_ids"], ["first"])
+        self.assertTrue(database.delete_source_set(saved["id"]))
+        self.assertEqual(database.list_source_sets(), [])
+
+    def test_source_sets_reject_unknown_failed_and_duplicate_documents(self):
+        database.add_document("ready.pdf", doc_id="ready")
+        database.add_document("failed.pdf", doc_id="failed", status="failed")
+        for ids in (["missing"], ["failed"], ["ready", "ready"]):
+            with self.assertRaises(ValueError):
+                database.create_source_set("Invalid", ids)
+        self.assertEqual(database.list_source_sets(), [])
+
     def test_feedback_survives_database_reload_and_only_targets_answers(self):
         database.create_conversation("conversation-1", "Test")
         database.save_message("user-1", "conversation-1", "user", "Question")

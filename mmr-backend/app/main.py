@@ -38,6 +38,10 @@ from app.database import (
     delete_document_record,
     update_document_status,
     set_document_tags,
+    list_source_sets,
+    create_source_set,
+    update_source_set,
+    delete_source_set,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -139,6 +143,26 @@ class TagsRequest(BaseModel):
         if any(not tag or len(tag) > 40 for tag in normalized):
             raise ValueError("Tags must be non-empty and at most 40 characters.")
         return list(dict.fromkeys(normalized))
+
+
+class SourceSetRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    document_ids: List[str] = Field(min_length=1, max_length=50)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, name: str) -> str:
+        name = name.strip()
+        if not name:
+            raise ValueError("A source-set name is required.")
+        return name
+
+    @field_validator("document_ids")
+    @classmethod
+    def validate_document_ids(cls, document_ids: List[str]) -> List[str]:
+        if len(set(document_ids)) != len(document_ids) or any(not item.strip() for item in document_ids):
+            raise ValueError("Document IDs must be distinct and non-empty.")
+        return document_ids
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +448,37 @@ def update_feedback(message_id: str, request: FeedbackRequest):
 # ---------------------------------------------------------------------------
 # Documents (list / delete)
 # ---------------------------------------------------------------------------
+
+@app.get("/api/source-sets")
+def get_source_sets():
+    return list_source_sets()
+
+
+@app.post("/api/source-sets")
+def save_source_set(request: SourceSetRequest):
+    try:
+        return create_source_set(request.name, request.document_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.put("/api/source-sets/{source_set_id}")
+def replace_source_set(source_set_id: str, request: SourceSetRequest):
+    try:
+        result = update_source_set(source_set_id, request.name, request.document_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Source set not found.")
+    return result
+
+
+@app.delete("/api/source-sets/{source_set_id}")
+def remove_source_set(source_set_id: str):
+    if not delete_source_set(source_set_id):
+        raise HTTPException(status_code=404, detail="Source set not found.")
+    return {"status": "deleted", "id": source_set_id}
+
 
 @app.get("/api/documents")
 def get_documents():

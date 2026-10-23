@@ -94,6 +94,22 @@ def init_db() -> None:
                 FROM documents_legacy
             """)
             cursor.execute("DROP TABLE documents_legacy")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS source_sets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS source_set_documents (
+                source_set_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (source_set_id, document_id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_source_set_documents_doc ON source_set_documents (document_id)")
         conn.commit()
     logger.info("SQLite database initialized successfully.")
 
@@ -302,6 +318,77 @@ def set_document_tags(doc_id: str, tags: List[str]) -> bool:
 
 def delete_document_record(doc_id: str) -> None:
     with get_connection() as conn:
+        conn.execute("DELETE FROM source_set_documents WHERE document_id = ?", (doc_id,))
         conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
         conn.commit()
     logger.info("Deleted document record: %s", doc_id)
+
+
+def _validate_source_set_documents(conn: sqlite3.Connection, document_ids: List[str]) -> None:
+    if not document_ids or len(document_ids) > 50 or len(set(document_ids)) != len(document_ids):
+        raise ValueError("Select 1 to 50 distinct documents.")
+    placeholders = ",".join("?" for _ in document_ids)
+    ready_count = conn.execute(
+        f"SELECT COUNT(*) FROM documents WHERE id IN ({placeholders}) AND status = 'ready'",
+        document_ids,
+    ).fetchone()[0]
+    if ready_count != len(document_ids):
+        raise ValueError("Source sets can contain only registered, ready documents.")
+
+
+def _source_set_record(conn: sqlite3.Connection, row: sqlite3.Row) -> Dict[str, Any]:
+    members = conn.execute("""
+        SELECT ssd.document_id FROM source_set_documents AS ssd
+        JOIN documents AS d ON d.id = ssd.document_id AND d.status = 'ready'
+        WHERE ssd.source_set_id = ? ORDER BY ssd.position
+    """, (row["id"],)).fetchall()
+    return {"id": row["id"], "name": row["name"],
+            "created_at": row["created_at"], "document_ids": [member[0] for member in members]}
+
+
+def list_source_sets() -> List[Dict[str, Any]]:
+    """List saved document selections with only currently ready members."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM source_sets ORDER BY created_at ASC, rowid ASC").fetchall()
+        return [_source_set_record(conn, row) for row in rows]
+
+
+def create_source_set(name: str, document_ids: List[str]) -> Dict[str, Any]:
+    """Persist a named collection of ready document IDs."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        _validate_source_set_documents(conn, document_ids)
+        source_set_id = str(uuid.uuid4())
+        conn.execute("INSERT INTO source_sets (id, name) VALUES (?, ?)", (source_set_id, name))
+        conn.executemany(
+            "INSERT INTO source_set_documents (source_set_id, document_id, position) VALUES (?, ?, ?)",
+            [(source_set_id, document_id, position) for position, document_id in enumerate(document_ids)],
+        )
+        row = conn.execute("SELECT * FROM source_sets WHERE id = ?", (source_set_id,)).fetchone()
+        return _source_set_record(conn, row)
+
+
+def update_source_set(source_set_id: str, name: str, document_ids: List[str]) -> Optional[Dict[str, Any]]:
+    """Replace a saved selection atomically, or return None if it is absent."""
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM source_sets WHERE id = ?", (source_set_id,)).fetchone()
+        if row is None:
+            return None
+        _validate_source_set_documents(conn, document_ids)
+        conn.execute("UPDATE source_sets SET name = ? WHERE id = ?", (name, source_set_id))
+        conn.execute("DELETE FROM source_set_documents WHERE source_set_id = ?", (source_set_id,))
+        conn.executemany(
+            "INSERT INTO source_set_documents (source_set_id, document_id, position) VALUES (?, ?, ?)",
+            [(source_set_id, document_id, position) for position, document_id in enumerate(document_ids)],
+        )
+        row = conn.execute("SELECT * FROM source_sets WHERE id = ?", (source_set_id,)).fetchone()
+        return _source_set_record(conn, row)
+
+
+def delete_source_set(source_set_id: str) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM source_sets WHERE id = ?", (source_set_id,))
+        conn.execute("DELETE FROM source_set_documents WHERE source_set_id = ?", (source_set_id,))
+        return cursor.rowcount == 1

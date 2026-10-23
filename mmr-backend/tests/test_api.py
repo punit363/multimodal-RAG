@@ -224,6 +224,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/documents").json()[0]["tags"], ["Finance", "2026"])
         self.assertEqual(self.client.patch("/api/documents/document-1/tags", json={"tags": [""]}).status_code, 422)
 
+    def test_source_set_api_saves_replaces_and_removes_ready_document_scope(self):
+        database.add_document("first.pdf", doc_id="first")
+        database.add_document("second.pdf", doc_id="second")
+        created = self.client.post("/api/source-sets", json={"name": " Reports ", "document_ids": ["first", "second"]})
+        self.assertEqual(created.status_code, 200)
+        saved = created.json()
+        self.assertEqual(saved["name"], "Reports")
+        self.assertEqual(self.client.get("/api/source-sets").json()[0]["document_ids"], ["first", "second"])
+        replaced = self.client.put(f"/api/source-sets/{saved['id']}", json={"name": "Current", "document_ids": ["second"]})
+        self.assertEqual(replaced.json()["document_ids"], ["second"])
+        self.assertEqual(self.client.post("/api/source-sets", json={"name": "Bad", "document_ids": ["missing"]}).status_code, 422)
+        self.assertEqual(self.client.post("/api/source-sets", json={"name": "Bad", "document_ids": ["first", "first"]}).status_code, 422)
+        self.assertEqual(self.client.delete(f"/api/source-sets/{saved['id']}").status_code, 200)
+        self.assertEqual(self.client.get("/api/source-sets").json(), [])
+
     def test_chat_stream_persists_a_retryable_failure_message(self):
         def stream(query, k=3, sources=None):
             yield f"data: {json.dumps({'type': 'error', 'message': 'model unavailable'})}\n\n"
