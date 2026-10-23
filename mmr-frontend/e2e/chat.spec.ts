@@ -139,6 +139,81 @@ test("comparison mode requires two sources and sends both document IDs", async (
   expect(requestBody).toMatchObject({ mode: "compare", sources: ["doc-a", "doc-b"] });
 });
 
+test("saves, reloads, updates, and deletes a source set", async ({ page }) => {
+  let saved: { id: string; name: string; document_ids: string[] }[] = [];
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (pathname === "/api/conversations") return route.fulfill({ json: [] });
+    if (pathname === "/api/documents") return route.fulfill({ json: [
+      { id: "doc-a", filename: "alpha.pdf", status: "ready" },
+      { id: "doc-b", filename: "beta.pdf", status: "ready" },
+    ] });
+    if (pathname === "/api/source-sets" && method === "GET") return route.fulfill({ json: saved });
+    if (pathname === "/api/source-sets" && method === "POST") {
+      saved = [{ id: "set-1", ...route.request().postDataJSON() }];
+      return route.fulfill({ json: saved[0] });
+    }
+    if (pathname === "/api/source-sets/set-1" && method === "PUT") {
+      saved = [{ id: "set-1", ...route.request().postDataJSON() }];
+      return route.fulfill({ json: saved[0] });
+    }
+    if (pathname === "/api/source-sets/set-1" && method === "DELETE") {
+      saved = [];
+      return route.fulfill({ json: { status: "deleted", id: "set-1" } });
+    }
+    return route.abort();
+  });
+  page.on("dialog", (dialog) => void dialog.accept("Research"));
+  await page.goto("/chat");
+  await expect(page.getByLabel("Use alpha.pdf as a source")).toBeChecked();
+  await page.getByRole("button", { name: "Save selection" }).click();
+  await expect(page.getByLabel("Saved source sets")).toHaveValue("set-1");
+  await page.getByLabel("Use beta.pdf as a source").uncheck();
+  await page.getByRole("button", { name: "Update set" }).click();
+  await expect.poll(() => saved[0].document_ids).toEqual(["doc-a"]);
+  await page.reload();
+  await page.getByLabel("Saved source sets").selectOption("set-1");
+  await expect(page.getByLabel("Use alpha.pdf as a source")).toBeChecked();
+  await expect(page.getByLabel("Use beta.pdf as a source")).not.toBeChecked();
+  await page.getByRole("button", { name: "Delete set" }).click();
+  await expect(page.getByLabel("Saved source sets").locator("option[value='set-1']")).toHaveCount(0);
+});
+
+test("batch upload continues after failure and retries only that file", async ({ page }) => {
+  const attempts: Record<string, number> = {};
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/conversations" || pathname === "/api/documents" || pathname === "/api/source-sets") {
+      return route.fulfill({ json: [] });
+    }
+    if (pathname === "/api/ingest-stream") {
+      const body = route.request().postDataBuffer()?.toString() || "";
+      const filename = body.includes("first.pdf") ? "first.pdf" : "second.pdf";
+      attempts[filename] = (attempts[filename] || 0) + 1;
+      const failed = filename === "first.pdf" && attempts[filename] === 1;
+      const event = failed
+        ? { step: -1, status: "error", label: "First file failed" }
+        : { step: 5, status: "completed", filename, document_id: filename };
+      return route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify(event)}\n\n` });
+    }
+    return route.abort();
+  });
+  await page.goto("/chat");
+  await page.locator('input[type="file"]').setInputFiles([
+    { name: "first.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-first") },
+    { name: "second.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-second") },
+  ]);
+  await expect(page.getByLabel("Upload batch").getByText("first.pdf")).toBeVisible();
+  await expect(page.getByLabel("Upload batch").getByText("second.pdf")).toBeVisible();
+  await expect.poll(() => attempts["second.pdf"]).toBe(1);
+  await expect(page.getByLabel("Upload batch").getByText("failed")).toBeVisible();
+  await expect(page.getByLabel("Upload batch").getByText("completed")).toBeVisible();
+  await page.getByLabel("Upload batch").getByRole("button", { name: "Retry" }).click();
+  await expect.poll(() => attempts["first.pdf"]).toBe(2);
+  await expect(page.getByLabel("Upload batch").getByText("completed")).toHaveCount(2);
+});
+
 test("edits document tags and offers the new tag as a filter", async ({ page }) => {
   let tags: string[] = [];
   await page.route("http://localhost:8000/api/**", async (route) => {

@@ -58,16 +58,32 @@ interface DocumentItem {
   tags?: string[];
 }
 
+interface SourceSet {
+  id: string;
+  name: string;
+  document_ids: string[];
+}
+
+interface BatchItem {
+  file: File;
+  status: "pending" | "uploading" | "completed" | "failed" | "cancelled";
+}
+
 export default function ChatWorkspace() {
   const [ingestStep, setIngestStep] = useState<number>(0);
   const [ingestError, setIngestError] = useState<string>("");
   const [isIngesting, setIsIngesting] = useState(false);
   const [lastIngestFile, setLastIngestFile] = useState<File | null>(null);
   const ingestControllerRef = useRef<AbortController | null>(null);
+  const batchCancelRequestedRef = useRef(false);
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
+  const [batchRunning, setBatchRunning] = useState(false);
 
   // Knowledge base
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+  const [sourceSets, setSourceSets] = useState<SourceSet[]>([]);
+  const [activeSourceSetId, setActiveSourceSetId] = useState("");
   const [filterPage, setFilterPage] = useState("");
   const [filterContentType, setFilterContentType] = useState("");
   const [filterCreatedFrom, setFilterCreatedFrom] = useState("");
@@ -182,14 +198,26 @@ export default function ChatWorkspace() {
     }
   }, []);
 
+  const fetchSourceSets = useCallback(async () => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/source-sets`);
+      if (!response.ok) throw new Error(`Could not load source sets (${response.status}).`);
+      const saved: SourceSet[] = await response.json();
+      setSourceSets(saved);
+      setActiveSourceSetId((current) => saved.some((item) => item.id === current) ? current : "");
+    } catch (error) {
+      setWorkspaceError(getErrorMessage(error, "Could not load source sets."));
+    }
+  }, []);
+
   // Initial load: conversations + documents from the backend
   useEffect(() => {
     const loadTimer = window.setTimeout(() => {
-      void Promise.all([fetchConversations(), fetchDocuments()]);
+      void Promise.all([fetchConversations(), fetchDocuments(), fetchSourceSets()]);
     }, 0);
 
     return () => window.clearTimeout(loadTimer);
-  }, [fetchConversations, fetchDocuments]);
+  }, [fetchConversations, fetchDocuments, fetchSourceSets]);
 
   const toggleDocument = (id: string) => {
     setSelectedDocIds((prev) => {
@@ -208,6 +236,75 @@ export default function ChatWorkspace() {
     );
   };
 
+  const loadSourceSet = (id: string) => {
+    setActiveSourceSetId(id);
+    const saved = sourceSets.find((item) => item.id === id);
+    if (!saved) return;
+    const ready = new Set(readyDocuments.map((document) => document.id));
+    setSelectedDocIds(new Set(saved.document_ids.filter((documentId) => ready.has(documentId))));
+  };
+
+  const saveSourceSet = async () => {
+    const documentIds = readyDocuments.filter((document) => selectedDocIds.has(document.id)).map((document) => document.id);
+    if (!documentIds.length) {
+      setWorkspaceError("Select at least one ready document before saving a source set.");
+      return;
+    }
+    const name = window.prompt("Name this source set");
+    if (name === null) return;
+    if (!name.trim()) {
+      setWorkspaceError("A source-set name is required.");
+      return;
+    }
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/source-sets`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), document_ids: documentIds }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || `Could not save source set (${response.status}).`);
+      const saved: SourceSet = await response.json();
+      await fetchSourceSets();
+      setActiveSourceSetId(saved.id);
+      setWorkspaceError("");
+    } catch (error) {
+      setWorkspaceError(getErrorMessage(error, "Could not save source set."));
+    }
+  };
+
+  const updateSelectedSourceSet = async () => {
+    const saved = sourceSets.find((item) => item.id === activeSourceSetId);
+    if (!saved) return;
+    const documentIds = readyDocuments.filter((document) => selectedDocIds.has(document.id)).map((document) => document.id);
+    if (!documentIds.length) {
+      setWorkspaceError("Select at least one ready document for the source set.");
+      return;
+    }
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/source-sets/${encodeURIComponent(saved.id)}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: saved.name, document_ids: documentIds }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || `Could not update source set (${response.status}).`);
+      await fetchSourceSets();
+      setWorkspaceError("");
+    } catch (error) {
+      setWorkspaceError(getErrorMessage(error, "Could not update source set."));
+    }
+  };
+
+  const removeSelectedSourceSet = async () => {
+    if (!activeSourceSetId) return;
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/source-sets/${encodeURIComponent(activeSourceSetId)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(`Could not delete source set (${response.status}).`);
+      setActiveSourceSetId("");
+      await fetchSourceSets();
+      setWorkspaceError("");
+    } catch (error) {
+      setWorkspaceError(getErrorMessage(error, "Could not delete source set."));
+    }
+  };
+
   const handleDeleteDocument = async (doc: DocumentItem) => {
     if (!window.confirm(`Delete "${doc.filename}" and remove it from the knowledge base?`)) {
       return;
@@ -224,6 +321,7 @@ export default function ChatWorkspace() {
         throw new Error(detail?.detail || `Delete failed (${res.status})`);
       }
       await fetchDocuments();
+      await fetchSourceSets();
     } catch (err: unknown) {
       setWorkspaceError(getErrorMessage(err, "Could not delete the document."));
       setFailedDelete(doc);
@@ -251,18 +349,18 @@ export default function ChatWorkspace() {
   };
 
   // Document Upload Stream Handler
-  const handleIngestStream = async (selectedFile: File) => {
+  const handleIngestStream = async (selectedFile: File): Promise<boolean> => {
     if (selectedFile.type !== "application/pdf" || !selectedFile.name.toLowerCase().endsWith(".pdf")) {
       setIngestStep(1);
       setIngestError("Choose a PDF file with the application/pdf MIME type.");
       setLastIngestFile(selectedFile);
-      return;
+      return false;
     }
     if (selectedFile.size > 25 * 1024 * 1024) {
       setIngestStep(1);
       setIngestError("PDF exceeds the 25 MB upload limit.");
       setLastIngestFile(selectedFile);
-      return;
+      return false;
     }
 
     setIngestStep(1);
@@ -278,6 +376,8 @@ export default function ChatWorkspace() {
       () => controller.abort(new Error("Ingestion timed out.")),
       5 * 60 * 1000
     );
+    let completed = false;
+    let failed = false;
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/ingest-stream`, {
@@ -295,7 +395,6 @@ export default function ChatWorkspace() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let failed = false;
 
       while (!failed) {
         const { value, done } = await reader.read();
@@ -317,6 +416,7 @@ export default function ChatWorkspace() {
             }
             setIngestStep(data.step);
             if (data.status === "completed") {
+              completed = true;
               setLastIngestFile(null);
               await fetchDocuments();
             }
@@ -324,6 +424,9 @@ export default function ChatWorkspace() {
             console.error("Error parsing ingestion SSE line:", err);
           }
         }
+      }
+      if (!completed && !failed) {
+        setIngestError("Ingestion ended without confirmation; retry this file.");
       }
     } catch (err: unknown) {
       setIngestError(
@@ -336,9 +439,44 @@ export default function ChatWorkspace() {
       if (ingestControllerRef.current === controller) ingestControllerRef.current = null;
       setIsIngesting(false);
     }
+    return completed && !failed;
+  };
+
+  const handleBatchUpload = async (files: File[]) => {
+    if (!files.length || batchRunning || isIngesting) return;
+    batchCancelRequestedRef.current = false;
+    setBatchItems(files.map((file) => ({ file, status: "pending" })));
+    setBatchRunning(true);
+    try {
+      for (let index = 0; index < files.length; index += 1) {
+        if (batchCancelRequestedRef.current) break;
+        setBatchItems((items) => items.map((item, position) => position === index ? { ...item, status: "uploading" } : item));
+        const completed = await handleIngestStream(files[index]);
+        const cancelled = batchCancelRequestedRef.current;
+        setBatchItems((items) => items.map((item, position) => position === index ? {
+          ...item, status: completed ? "completed" : cancelled ? "cancelled" : "failed",
+        } : item));
+      }
+    } finally {
+      setBatchItems((items) => items.map((item) => item.status === "pending" ? { ...item, status: "cancelled" } : item));
+      setBatchRunning(false);
+    }
+  };
+
+  const retryBatchItem = async (index: number) => {
+    if (batchRunning || isIngesting) return;
+    const file = batchItems[index]?.file;
+    if (!file) return;
+    batchCancelRequestedRef.current = false;
+    setBatchItems((items) => items.map((item, position) => position === index ? { ...item, status: "uploading" } : item));
+    const completed = await handleIngestStream(file);
+    setBatchItems((items) => items.map((item, position) => position === index ? {
+      ...item, status: completed ? "completed" : "failed",
+    } : item));
   };
 
   const cancelIngestion = () => {
+    batchCancelRequestedRef.current = true;
     ingestControllerRef.current?.abort(new Error("Cancelled by user."));
   };
 
@@ -627,7 +765,7 @@ export default function ChatWorkspace() {
                 onClick={() =>
                   failedDelete
                     ? void handleDeleteDocument(failedDelete)
-                    : void Promise.all([fetchConversations(), fetchDocuments()])
+                    : void Promise.all([fetchConversations(), fetchDocuments(), fetchSourceSets()])
                 }
                 className="inline-flex items-center gap-1 font-semibold hover:underline"
               >
@@ -825,19 +963,20 @@ export default function ChatWorkspace() {
 
         <div className="space-y-2">
           <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">Add Sources</span>
-          <label className={`border-2 border-dashed border-neutral-300 dark:border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-50 dark:bg-neutral-950/40 transition-all ${isIngesting ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}>
+          <label className={`border-2 border-dashed border-neutral-300 dark:border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-50 dark:bg-neutral-950/40 transition-all ${isIngesting || batchRunning ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}>
             <UploadCloud size={20} className="text-neutral-500" />
             <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Drop files or click to upload</span>
-            <span className="text-[10px] text-neutral-500">PDF documents supported</span>
+            <span className="text-[10px] text-neutral-500">Select multiple PDFs to upload in sequence</span>
             <input
               type="file"
               accept=".pdf"
-              disabled={isIngesting}
+              multiple
+              disabled={isIngesting || batchRunning}
               className="hidden"
               onChange={(e) => {
-                const selected = e.target.files?.[0];
-                if (selected) {
-                  handleIngestStream(selected);
+                const selected = Array.from(e.target.files || []);
+                if (selected.length) {
+                  void handleBatchUpload(selected);
                 }
                 // allow re-uploading the same file
                 e.target.value = "";
@@ -852,11 +991,37 @@ export default function ChatWorkspace() {
             errorMsg={ingestError}
             isRunning={isIngesting}
             onCancel={cancelIngestion}
-            onRetry={lastIngestFile ? () => void handleIngestStream(lastIngestFile) : undefined}
+            onRetry={lastIngestFile && !batchRunning && !batchItems.length ? () => void handleIngestStream(lastIngestFile) : undefined}
           />
         )}
 
+        {batchItems.length > 0 && (
+          <div aria-label="Upload batch" className="space-y-1 text-[11px] text-neutral-600 dark:text-neutral-400">
+            {batchItems.map((item, index) => (
+              <div key={`${item.file.name}-${index}`} className="flex items-center justify-between gap-2">
+                <span className="truncate" title={item.file.name}>{item.file.name}</span>
+                <span className="shrink-0">{item.status}</span>
+                {(item.status === "failed" || item.status === "cancelled") && (
+                  <button type="button" disabled={batchRunning || isIngesting} onClick={() => void retryBatchItem(index)} className="text-[#D4AF37] disabled:opacity-50">Retry</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto space-y-2 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+          <div className="space-y-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+            <label className="block text-xs text-neutral-600 dark:text-neutral-400" htmlFor="source-set-select">Saved source sets</label>
+            <select id="source-set-select" aria-label="Saved source sets" value={activeSourceSetId} onChange={(event) => loadSourceSet(event.target.value)} className="w-full rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-xs">
+              <option value="">Choose a saved set</option>
+              {sourceSets.map((saved) => <option key={saved.id} value={saved.id}>{saved.name} ({saved.document_ids.length})</option>)}
+            </select>
+            <div className="flex gap-2 text-[10px] text-[#D4AF37]">
+              <button type="button" onClick={() => void saveSourceSet()} disabled={!selectedDocIds.size} className="disabled:opacity-50 hover:underline">Save selection</button>
+              <button type="button" onClick={() => void updateSelectedSourceSet()} disabled={!activeSourceSetId || !selectedDocIds.size} className="disabled:opacity-50 hover:underline">Update set</button>
+              <button type="button" onClick={() => void removeSelectedSourceSet()} disabled={!activeSourceSetId} className="disabled:opacity-50 hover:underline">Delete set</button>
+            </div>
+          </div>
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
               Sources ({documents.length})
