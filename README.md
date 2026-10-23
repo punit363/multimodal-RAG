@@ -120,6 +120,8 @@ Newly ingested PDFs are chunked within page and section boundaries. Text, table-
 
 Enable **Compare selected documents** in chat after selecting two to four ready PDFs. The backend retrieves evidence from each selected document and requires registered citations from every document in the generated comparison. If one document has no matching evidence, it returns the insufficient-evidence response; if the generated comparison omits a document citation, it shows a verification failure instead. The non-streaming API also accepts `"mode": "compare"` with two to four distinct `sources` IDs. Representative comparison quality has not been measured because that evaluation was deferred.
 
+Phase 4 starts with multiple-PDF upload through the existing validated ingestion stream. Files run in sequence, each file has a visible outcome, and failures can be retried without repeating successful files. Cancelling the current upload stops the remaining queue. In the Knowledge Base sidebar, **Save selection** creates a named source set from ready documents; choose it later to restore the selection, or update/delete it. Source sets are persisted in SQLite, and deleting a document removes it from saved sets. Folder organization, additional formats, summaries, extraction review, structured outputs, multilingual support, and sharing remain planned in the [Phase 4 roadmap](CODEX.md).
+
 ## Runtime safety behavior
 
 - Uploads are checked for PDF extension, MIME type, signature, size, readability, encryption, and page count before ingestion.

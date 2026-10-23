@@ -139,3 +139,38 @@ After completing each priority, update the Phase 2 Notion page with implemented 
 
 After each priority, update the Phase 3 Notion page with implemented features, changed files, new and updated function/class names plus a short description of each, commits, validation results, learnings, blockers, and next steps. Update the main engineering log's quick phase summary with a link to the full Phase 3 details. Do not report a quality improvement until a representative evaluation has measured it.
 
+## Phase 4 — Product Expansion
+
+**Status:** In progress — Low-priority feature implementation complete October 23, 2026; Medium and High priorities remain planned.
+
+**Objective:** Turn the PDF demo into a broader document-intelligence workspace. The [Phase 4 engineering log](https://app.notion.com/p/3fa7cd5908fc81d1b42bfa414f65d954) records progress after each priority. Execute Low → Medium → High with reviewable commits within each priority.
+
+### Low priority — batch input and reusable scope
+
+- [x] Upload multiple PDFs as a sequential batch with per-file progress, failure, cancellation, and retry while retaining the existing PDF validation and cleanup path.
+- [x] Save selected documents as named source sets (collections), reload them for chat, update membership, and delete them. Keep source sets consistent when documents are removed. Existing document tags remain available.
+
+**Acceptance:** A failed file does not stop other queued PDFs, each file has an actionable outcome, and selected documents can be restored from a saved source set after reload. Deleted documents cannot reappear through a source set.
+
+**Low-priority implementation:** The file picker accepts multiple PDFs and processes them sequentially through the existing guarded ingestion stream. A batch lists each file's state and retries failed or cancelled files independently. Named source sets persist ready document IDs in SQLite, can be saved/loaded/updated/deleted in chat, and automatically lose membership when a document is deleted. Backend tests cover persistence, validation, API behavior, and deletion cleanup; Chromium tests cover batch continuation/retry and source-set reload/update/delete. The remaining Phase 4 features are scheduled in Medium and High priorities.
+
+### Medium priority — organization, formats, and review
+
+- [ ] Add folders for organizing documents, plus document, section, and collection summaries.
+- [ ] Add DOCX, PPTX, XLSX, image, and web-page ingestion with format-specific extraction and retrieval fixtures.
+- [ ] Add scanned-PDF OCR quality checks and an extraction review workflow; make partial or uncertain extraction visible.
+
+**Acceptance:** Every supported format has a verified ingestion and retrieval fixture. Users can review extraction quality, navigate folders, and inspect summaries at each supported level.
+
+### High priority — advanced outputs and collaboration
+
+- [ ] Add structured extraction, timelines, comparison matrices, and exportable reports with source citations.
+- [ ] Add multilingual ingestion and question answering with language-aware validation.
+- [ ] Add shared collections, comments, and shareable conversations with explicit access controls.
+
+**Acceptance:** Structured outputs and collaboration have end-to-end coverage; cited claims remain traceable to source evidence, and access controls prevent cross-user leakage.
+
+### Execution record for every priority
+
+After each priority, update the Phase 4 Notion page with implemented features, changed files, new and updated function/class names plus short descriptions, commits, validation results, learnings, blockers, and next steps. Update the main engineering log's quick phase summary with a link to the full Phase 4 details.
+
