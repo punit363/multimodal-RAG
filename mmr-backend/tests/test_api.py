@@ -2,6 +2,7 @@ import json
 import io
 import sys
 import tempfile
+import zipfile
 import types
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ fake_rag_pipeline.store_documents = lambda documents: None
 fake_rag_pipeline.answer_query = lambda query, k=3, sources=None: {"answer": "stub", "sources": []}
 fake_rag_pipeline.answer_query_stream = lambda query, k=3, sources=None: iter(())
 fake_rag_pipeline.delete_document_vectors = lambda filename: True
+fake_rag_pipeline.summarize_evidence = lambda ids, section_title=None: {"kind": "extractive", "items": [], "total_matching_chunks": 0}
 sys.modules["app.rag_pipeline"] = fake_rag_pipeline
 
 from app import main  # noqa: E402
@@ -309,7 +311,48 @@ class ApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "Only PDF files are supported.")
+        self.assertEqual(response.json()["detail"], "Unsupported document format.")
+
+    def test_folders_preserve_documents_and_extraction_review(self):
+        database.add_document("report.pdf", doc_id="report", storage_name="report.pdf")
+        folder = self.client.post("/api/folders", json={"name": "Research"})
+        self.assertEqual(folder.status_code, 200)
+        folder_id = folder.json()["id"]
+        self.assertEqual(self.client.patch("/api/documents/report/folder", json={"folder_id": folder_id}).status_code, 200)
+        self.assertEqual(self.client.get("/api/documents").json()[0]["folder_id"], folder_id)
+        self.assertEqual(self.client.patch("/api/documents/report/extraction", json={"status": "needs_attention", "note": "Page 2 is faint"}).status_code, 200)
+        self.assertEqual(self.client.get("/api/documents/report/extraction").json()["review_note"], "Page 2 is faint")
+        self.assertEqual(self.client.delete(f"/api/folders/{folder_id}").status_code, 200)
+        self.assertIsNone(self.client.get("/api/documents").json()[0]["folder_id"])
+
+    def test_summary_scope_uses_only_registered_ready_documents(self):
+        database.add_document("report.pdf", doc_id="report", storage_name="report.pdf")
+        database.add_document("draft.pdf", doc_id="draft", storage_name="draft.pdf", status="processing")
+        self.assertEqual(self.client.get("/api/summaries", params={"scope": "document", "document_id": "report"}).status_code, 200)
+        self.assertEqual(self.client.get("/api/summaries", params={"scope": "document", "document_id": "draft"}).status_code, 404)
+        self.assertEqual(self.client.get("/api/summaries", params={"scope": "section", "document_id": "report"}).status_code, 422)
+
+    def test_web_page_rejects_private_hosts_before_fetch(self):
+        response = self.client.post("/api/ingest-web-page", json={"url": "http://127.0.0.1/secret"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_extraction_report_flags_low_text_pages(self):
+        report = main._extraction_report([], 2)
+        self.assertEqual(report["quality"], "review_recommended")
+        self.assertEqual(report["low_text_pages"], [1, 2])
+
+    def test_docx_ingestion_and_registered_original_download(self):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("word/document.xml", '<w:document xmlns:w="w"><w:p><w:t>Alpha result is 42.</w:t></w:p></w:document>')
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        response = self.client.post("/api/ingest-stream", files={"file": ("result.docx", output.getvalue(), mime)})
+        self.assertIn('"status": "completed"', response.text)
+        docs = self.client.get("/api/documents").json()
+        self.assertEqual(docs[0]["source_format"], "docx")
+        self.assertEqual(docs[0]["extraction"]["quality"], "complete")
+        self.assertEqual(self.client.get(f"/api/documents/{docs[0]['id']}/file").content, output.getvalue())
+        self.assertEqual(self.client.get(f"/api/documents/{docs[0]['id']}/pdf").status_code, 404)
 
     def test_ingestion_rejects_wrong_mime_signature_and_oversized_files(self):
         wrong_mime = self.client.post(

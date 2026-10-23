@@ -10,3 +10,4 @@ langchain-chroma
 pydantic
 nh3
 pypdf
+Pillow

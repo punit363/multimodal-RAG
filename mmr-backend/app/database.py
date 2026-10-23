@@ -94,6 +94,20 @@ def init_db() -> None:
                 FROM documents_legacy
             """)
             cursor.execute("DROP TABLE documents_legacy")
+        document_columns = {row[1] for row in cursor.execute("PRAGMA table_info(documents)")}
+        for column, definition in {
+            "folder_id": "TEXT",
+            "source_format": "TEXT NOT NULL DEFAULT 'pdf'",
+            "extraction_json": "TEXT",
+            "review_status": "TEXT NOT NULL DEFAULT 'unreviewed'",
+            "review_note": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if column not in document_columns:
+                cursor.execute(f"ALTER TABLE documents ADD COLUMN {column} {definition}")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS folders (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS source_sets (
                 id TEXT PRIMARY KEY,
@@ -302,7 +316,58 @@ def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
 def _document_record(row: sqlite3.Row) -> Dict[str, Any]:
     record = dict(row)
     record["tags"] = json.loads(record.pop("tags_json") or "[]")
+    if "extraction_json" in record:
+        record["extraction"] = json.loads(record.pop("extraction_json") or "null")
     return record
+
+
+def list_folders() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute("SELECT * FROM folders ORDER BY name")]
+
+
+def create_folder(name: str) -> Dict[str, Any]:
+    folder_id = str(uuid.uuid4())
+    with get_connection() as conn:
+        conn.execute("INSERT INTO folders (id, name) VALUES (?, ?)", (folder_id, name))
+    return {"id": folder_id, "name": name}
+
+
+def rename_folder(folder_id: str, name: str) -> bool:
+    with get_connection() as conn:
+        return conn.execute("UPDATE folders SET name = ? WHERE id = ?", (name, folder_id)).rowcount == 1
+
+
+def delete_folder(folder_id: str) -> bool:
+    with get_connection() as conn:
+        if not conn.execute("SELECT 1 FROM folders WHERE id = ?", (folder_id,)).fetchone():
+            return False
+        conn.execute("UPDATE documents SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
+        conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+        return True
+
+
+def set_document_folder(doc_id: str, folder_id: Optional[str]) -> bool:
+    with get_connection() as conn:
+        if folder_id and not conn.execute("SELECT 1 FROM folders WHERE id = ?", (folder_id,)).fetchone():
+            raise ValueError("Folder not found.")
+        return conn.execute("UPDATE documents SET folder_id = ? WHERE id = ? AND status = 'ready'", (folder_id, doc_id)).rowcount == 1
+
+
+def set_document_extraction(doc_id: str, report: Dict[str, Any]) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE documents SET extraction_json = ? WHERE id = ?", (json.dumps(report), doc_id))
+
+
+def set_extraction_review(doc_id: str, status: str, note: str) -> bool:
+    with get_connection() as conn:
+        return conn.execute("UPDATE documents SET review_status = ?, review_note = ? WHERE id = ? AND status = 'ready'", (status, note, doc_id)).rowcount == 1
+
+
+def set_source_format(doc_id: str, source_format: str) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE documents SET source_format = ? WHERE id = ?", (source_format, doc_id))
 
 
 def set_document_tags(doc_id: str, tags: List[str]) -> bool:

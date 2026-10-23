@@ -224,6 +224,24 @@ def store_documents(documents: List[Document]) -> None:
     vectorstore.add_documents(documents, ids=ids)
 
 
+def summarize_evidence(document_ids: List[str], section_title: Optional[str] = None) -> Dict[str, Any]:
+    """Build a bounded extractive overview with resolvable source chunk IDs."""
+    items = []
+    for document_id in document_ids:
+        result = vectorstore._collection.get(where={"document_id": document_id}, include=["documents", "metadatas"])
+        for text, metadata in zip(result.get("documents") or [], result.get("metadatas") or []):
+            if not metadata or metadata.get("representation_type") != "text":
+                continue
+            if section_title is not None and metadata.get("section_title") != section_title:
+                continue
+            excerpt = " ".join((text or "").split())[:300]
+            if excerpt:
+                items.append({"text": excerpt, "filename": metadata.get("filename", ""),
+                              "document_id": document_id, "chunk_id": metadata.get("chunk_id", ""),
+                              "section_title": metadata.get("section_title", "")})
+    return {"kind": "extractive", "items": items[:12], "total_matching_chunks": len(items)}
+
+
 def process_and_store_documents(pdf_path: str) -> None:
     """Convenience wrapper: partition -> chunk -> summarise -> store."""
     filename = os.path.basename(pdf_path)

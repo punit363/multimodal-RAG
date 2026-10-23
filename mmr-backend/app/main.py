@@ -5,12 +5,19 @@ import json
 import uuid
 import asyncio
 import logging
+import ipaddress
+import socket
+import ssl
+import http.client
+import io
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import List, Literal, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.datastructures import Headers
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pypdf import PdfReader
 
@@ -22,8 +29,10 @@ from app.rag_pipeline import (
     answer_query,
     answer_query_stream,
     delete_document_vectors,
+    summarize_evidence,
 )
 from app.retrieval_filters import RetrievalFilters
+from app.document_extract import extract_sections
 from app.database import (
     init_db,
     create_conversation,
@@ -42,6 +51,14 @@ from app.database import (
     create_source_set,
     update_source_set,
     delete_source_set,
+    list_folders,
+    create_folder,
+    rename_folder,
+    delete_folder,
+    set_document_folder,
+    set_document_extraction,
+    set_extraction_review,
+    set_source_format,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -165,6 +182,28 @@ class SourceSetRequest(BaseModel):
         return document_ids
 
 
+class FolderRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, name: str) -> str:
+        return name.strip()
+
+
+class MoveDocumentRequest(BaseModel):
+    folder_id: Optional[str] = None
+
+
+class ExtractionReviewRequest(BaseModel):
+    status: Literal["accepted", "needs_attention"]
+    note: str = Field(default="", max_length=500)
+
+
+class WebPageRequest(BaseModel):
+    url: str = Field(min_length=10, max_length=2048)
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -233,6 +272,48 @@ async def _save_and_validate_pdf(file: UploadFile, file_path: str) -> None:
         )
 
 
+SUPPORTED_MIME = {
+    "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    "pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    "png": {"image/png"}, "jpg": {"image/jpeg"}, "jpeg": {"image/jpeg"},
+    "webp": {"image/webp"}, "tiff": {"image/tiff"},
+    "html": {"text/html"}, "htm": {"text/html"},
+}
+
+
+async def _save_and_validate_source(file: UploadFile, file_path: str, source_format: str) -> None:
+    if source_format == "pdf":
+        await _save_and_validate_pdf(file, file_path)
+        return
+    if source_format not in SUPPORTED_MIME or file.content_type not in SUPPORTED_MIME[source_format]:
+        raise HTTPException(status_code=400, detail="Unsupported file type or MIME type.")
+    total = 0
+    try:
+        with open(file_path, "wb") as destination:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="File exceeds the upload limit.")
+                destination.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+        if source_format in {"docx", "pptx", "xlsx"} and Path(file_path).read_bytes()[:2] != b"PK":
+            raise HTTPException(status_code=400, detail="Invalid Office file signature.")
+        if source_format in {"png", "jpg", "jpeg", "webp", "tiff"}:
+            from PIL import Image
+            with Image.open(file_path) as image:
+                image.verify()
+    except HTTPException:
+        Path(file_path).unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        Path(file_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="File is malformed or unreadable.") from exc
+    finally:
+        await file.close()
+
+
 async def _cleanup_failed_ingestion(doc_id: str, file_path: str, reason: str) -> None:
     cleanup_errors = []
     try:
@@ -250,7 +331,7 @@ async def _cleanup_failed_ingestion(doc_id: str, file_path: str, reason: str) ->
 
     try:
         if os.path.exists(file_path):
-            os.replace(file_path, os.path.join(QUARANTINE_DIR, f"{doc_id}.pdf.failed"))
+            os.replace(file_path, os.path.join(QUARANTINE_DIR, f"{doc_id}{Path(file_path).suffix}.failed"))
         update_document_status(
             doc_id,
             "failed",
@@ -274,31 +355,48 @@ async def _run_ingestion_step(function, *args):
 
 @app.post("/api/ingest-stream")
 async def ingest_document_stream(file: UploadFile = File(...)):
-    """Upload a PDF and stream step-by-step progress events."""
+    """Upload a supported source and stream step-by-step progress events."""
     filename = os.path.basename(file.filename or "")
+    source_format = Path(filename).suffix.lower().lstrip(".")
+    if source_format == "htm":
+        source_format = "html"
+    if source_format != "pdf" and source_format not in SUPPORTED_MIME:
+        raise HTTPException(status_code=400, detail="Unsupported document format.")
     document_id = str(uuid.uuid4())
-    storage_name = f"{document_id}.pdf"
+    storage_name = f"{document_id}.{source_format}"
     file_path = os.path.join(UPLOAD_DIR, storage_name)
-    await _save_and_validate_pdf(file, file_path)
+    await _save_and_validate_source(file, file_path, source_format)
     add_document(
         filename,
         doc_id=document_id,
         storage_name=storage_name,
         status="processing",
     )
+    set_source_format(document_id, source_format)
 
     async def event_generator():
         try:
-            yield _sse({"step": 1, "label": "Partitioning PDF Layout...", "status": "in_progress"})
-            elements = await _run_ingestion_step(partition_documents, file_path)
+            yield _sse({"step": 1, "label": "Extracting source content...", "status": "in_progress"})
+            if source_format == "pdf":
+                elements = await _run_ingestion_step(partition_documents, file_path)
+                chunks = await _run_ingestion_step(create_chunks_by_title, elements)
+                page_count = len((await asyncio.to_thread(PdfReader, file_path)).pages)
+                report = _extraction_report(elements, page_count)
+            else:
+                chunks = await _run_ingestion_step(extract_sections, file_path, source_format)
+                report = {"quality": "review_recommended" if source_format in {"png", "jpg", "jpeg", "webp", "tiff"} else "complete",
+                          "warnings": ["OCR text should be checked against the image."] if source_format in {"png", "jpg", "jpeg", "webp", "tiff"} else [],
+                          "section_count": len(chunks), "preview": [chunk.text[:500] for chunk in chunks[:5]]}
+            set_document_extraction(document_id, report)
 
-            yield _sse({"step": 2, "label": "Extracting Text, Tables & Images...", "status": "in_progress"})
-            chunks = await _run_ingestion_step(create_chunks_by_title, elements)
+            yield _sse({"step": 2, "label": "Preparing sections and evidence...", "status": "in_progress"})
 
             yield _sse({"step": 3, "label": "Generating Multi-Modal AI Summaries...", "status": "in_progress"})
             documents = await _run_ingestion_step(
                 build_documents, chunks, filename, document_id
             )
+            for item in documents:
+                item.metadata["source_format"] = source_format
 
             yield _sse({"step": 4, "label": "Generating Embeddings & Storing in ChromaDB...", "status": "in_progress"})
             await _run_ingestion_step(store_documents, documents)
@@ -327,6 +425,75 @@ async def ingest_document_stream(file: UploadFile = File(...)):
             })
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+def _extraction_report(elements, page_count: int) -> dict:
+    page_text = {page: [] for page in range(1, page_count + 1)}
+    unlocated = 0
+    for element in elements:
+        value = str(getattr(element, "text", "") or "").strip()
+        page = getattr(getattr(element, "metadata", None), "page_number", None)
+        if page in page_text:
+            page_text[page].append(value)
+        elif value:
+            unlocated += 1
+    missing = [page for page, parts in page_text.items() if len(" ".join(parts).strip()) < 25]
+    warnings = []
+    if missing:
+        warnings.append(f"Little or no text was extracted from pages: {', '.join(map(str, missing[:20]))}.")
+    if unlocated:
+        warnings.append(f"{unlocated} text elements have no page location.")
+    return {"quality": "review_recommended" if warnings else "complete", "warnings": warnings,
+            "page_count": page_count, "low_text_pages": missing, "unlocated_elements": unlocated,
+            "preview": [{"page": page, "text": " ".join(parts)[:500]} for page, parts in page_text.items()]}
+
+
+def _fetch_public_web_page(url: str) -> tuple[str, bytes]:
+    """Fetch one public HTML response with a DNS-pinned connection and no redirects."""
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
+        raise ValueError("Enter a public HTTP or HTTPS page URL.")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    if port not in {80, 443}:
+        raise ValueError("Only standard HTTP and HTTPS ports are supported.")
+    addresses = socket.getaddrinfo(parts.hostname, port, type=socket.SOCK_STREAM)
+    allowed = [entry[4][0] for entry in addresses if ipaddress.ip_address(entry[4][0]).is_global]
+    if not allowed or len(allowed) != len(addresses):
+        raise ValueError("The page address must resolve only to public IP addresses.")
+    address = allowed[0]
+    host = parts.hostname
+    target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    if parts.scheme == "https":
+        connection = http.client.HTTPSConnection(host, port, timeout=10)
+        def connect():
+            raw = socket.create_connection((address, port), timeout=10)
+            connection.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+    else:
+        connection = http.client.HTTPConnection(host, port, timeout=10)
+        def connect():
+            connection.sock = socket.create_connection((address, port), timeout=10)
+    connection.connect = connect
+    try:
+        connection.request("GET", target, headers={"Host": host, "Accept": "text/html", "User-Agent": "MultiModalRAG/1.0"})
+        response = connection.getresponse()
+        if response.status != 200 or not response.getheader("content-type", "").lower().startswith("text/html"):
+            raise ValueError("The URL must return a public HTML page (HTTP 200).")
+        body = response.read(min(MAX_UPLOAD_BYTES, 2 * 1024 * 1024) + 1)
+        if len(body) > min(MAX_UPLOAD_BYTES, 2 * 1024 * 1024):
+            raise ValueError("Web page exceeds the 2 MB extraction limit.")
+        return host, body
+    finally:
+        connection.close()
+
+
+@app.post("/api/ingest-web-page")
+async def ingest_web_page(request: WebPageRequest):
+    try:
+        host, body = await asyncio.to_thread(_fetch_public_web_page, request.url)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    file = UploadFile(file=io.BytesIO(body), filename=f"{host}.html", headers=Headers({"content-type": "text/html"}))
+    return await ingest_document_stream(file)
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +616,66 @@ def update_feedback(message_id: str, request: FeedbackRequest):
 # Documents (list / delete)
 # ---------------------------------------------------------------------------
 
+@app.get("/api/folders")
+def get_folders():
+    return list_folders()
+
+
+@app.post("/api/folders")
+def save_folder(request: FolderRequest):
+    try:
+        return create_folder(request.name)
+    except Exception as exc:
+        if "UNIQUE constraint" in str(exc):
+            raise HTTPException(status_code=409, detail="Folder name already exists.") from exc
+        raise
+
+
+@app.put("/api/folders/{folder_id}")
+def update_folder(folder_id: str, request: FolderRequest):
+    try:
+        found = rename_folder(folder_id, request.name)
+    except Exception as exc:
+        if "UNIQUE constraint" in str(exc):
+            raise HTTPException(status_code=409, detail="Folder name already exists.") from exc
+        raise
+    if not found:
+        raise HTTPException(status_code=404, detail="Folder not found.")
+    return {"id": folder_id, "name": request.name}
+
+
+@app.delete("/api/folders/{folder_id}")
+def remove_folder(folder_id: str):
+    if not delete_folder(folder_id):
+        raise HTTPException(status_code=404, detail="Folder not found.")
+    return {"status": "deleted", "id": folder_id}
+
+
+@app.patch("/api/documents/{doc_id}/folder")
+def move_document(doc_id: str, request: MoveDocumentRequest):
+    try:
+        found = set_document_folder(doc_id, request.folder_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not found:
+        raise HTTPException(status_code=404, detail="Ready document not found.")
+    return get_document(doc_id)
+
+
+@app.get("/api/documents/{doc_id}/extraction")
+def get_extraction(doc_id: str):
+    document = get_document(doc_id)
+    if not document or document["status"] != "ready":
+        raise HTTPException(status_code=404, detail="Ready document not found.")
+    return {"report": document["extraction"], "review_status": document["review_status"], "review_note": document["review_note"]}
+
+
+@app.patch("/api/documents/{doc_id}/extraction")
+def review_extraction(doc_id: str, request: ExtractionReviewRequest):
+    if not set_extraction_review(doc_id, request.status, request.note):
+        raise HTTPException(status_code=404, detail="Ready document not found.")
+    return get_extraction(doc_id)
+
 @app.get("/api/source-sets")
 def get_source_sets():
     return list_source_sets()
@@ -520,6 +747,37 @@ def get_document_pdf(doc_id: str):
     )
 
 
+@app.get("/api/documents/{doc_id}/file")
+def get_document_file(doc_id: str):
+    """Download a registered source, including non-PDF formats."""
+    document = get_document(doc_id)
+    if not document or document.get("status") != "ready":
+        raise HTTPException(status_code=404, detail="Document not found.")
+    storage_name = document.get("storage_name") or document["filename"]
+    path = Path(UPLOAD_DIR) / storage_name
+    if Path(storage_name).name != storage_name or path.resolve().parent != Path(UPLOAD_DIR).resolve() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Document file not found.")
+    return FileResponse(path, filename=document["filename"], content_disposition_type="attachment")
+
+
+@app.get("/api/summaries")
+def get_summary(scope: Literal["document", "section", "collection"], document_id: Optional[str] = None,
+                source_set_id: Optional[str] = None, section_title: Optional[str] = None):
+    if scope == "collection":
+        selected = next((item for item in list_source_sets() if item["id"] == source_set_id), None)
+        if not selected:
+            raise HTTPException(status_code=404, detail="Source set not found.")
+        ids = selected["document_ids"]
+    else:
+        document = get_document(document_id or "")
+        if not document or document["status"] != "ready":
+            raise HTTPException(status_code=404, detail="Ready document not found.")
+        if scope == "section" and not section_title:
+            raise HTTPException(status_code=422, detail="A section title is required.")
+        ids = [document["id"]]
+    return {"scope": scope, "summary": summarize_evidence(ids, section_title if scope == "section" else None)}
+
+
 @app.delete("/api/documents/{doc_id}")
 def remove_document(doc_id: str):
     """Delete a document's vectors, its registry row and the uploaded PDF."""
@@ -529,7 +787,7 @@ def remove_document(doc_id: str):
 
     storage_name = doc.get("storage_name") or doc["filename"]
     file_path = os.path.join(UPLOAD_DIR, storage_name)
-    quarantine_path = os.path.join(QUARANTINE_DIR, f"{doc_id}.pdf.deleting")
+    quarantine_path = os.path.join(QUARANTINE_DIR, f"{doc_id}{Path(storage_name).suffix}.deleting")
     vectors_deleted = False
     try:
         update_document_status(doc_id, "deleting")
