@@ -2,6 +2,39 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
+test("organizes a document and reviews source-backed extraction", async ({ page }) => {
+  let folderId: string | null = null;
+  let reviewStatus = "unreviewed";
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (pathname === "/api/conversations") return route.fulfill({ json: [] });
+    if (pathname === "/api/source-sets") return route.fulfill({ json: [] });
+    if (pathname === "/api/folders" && method === "GET") return route.fulfill({ json: folderId ? [{ id: "folder-1", name: "Research" }] : [] });
+    if (pathname === "/api/folders" && method === "POST") { folderId = "folder-1"; return route.fulfill({ json: { id: folderId, name: "Research" } }); }
+    if (pathname === "/api/documents" && method === "GET") return route.fulfill({ json: [{ id: "doc-1", filename: "report.pdf", status: "ready", source_format: "pdf", folder_id: folderId, review_status: reviewStatus, extraction: { quality: "review_recommended", warnings: ["Little or no text was extracted from page 2."], preview: [{ page: 2, text: "" }] } }] });
+    if (pathname === "/api/documents/doc-1/folder") { folderId = route.request().postDataJSON().folder_id; return route.fulfill({ json: { id: "doc-1", folder_id: folderId } }); }
+    if (pathname === "/api/documents/doc-1/extraction") { reviewStatus = route.request().postDataJSON().status; return route.fulfill({ json: { review_status: reviewStatus } }); }
+    if (pathname === "/api/summaries") return route.fulfill({ json: { summary: { items: [{ text: "Revenue increased by 12 percent.", filename: "report.pdf", document_id: "doc-1", chunk_id: "doc-1::chunk:1", section_title: "Results" }] } } });
+    return route.abort();
+  });
+  await page.goto("/chat");
+  await expect(page.getByLabel("Use report.pdf as a source")).toBeVisible();
+  page.once("dialog", (dialog) => void dialog.accept("Research"));
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect(page.getByLabel("Filter documents by folder").locator("option")).toHaveCount(3);
+  await page.getByLabel("Folder for report.pdf").selectOption("folder-1");
+  await page.getByLabel("Filter documents by folder").selectOption("folder-1");
+  await expect(page.getByLabel("Use report.pdf as a source")).toBeVisible();
+  await page.getByLabel("Summarize report.pdf").click();
+  await expect(page.getByText("Revenue increased by 12 percent.")).toBeVisible();
+  await page.getByRole("button", { name: "Close" }).click();
+  await page.getByLabel("Review extraction for report.pdf").click();
+  await expect(page.getByText(/Little or no text was extracted/)).toBeVisible();
+  await page.getByRole("button", { name: "Flag for review" }).click();
+  expect(reviewStatus).toBe("needs_attention");
+});
+
 test("loads documents and streams a cited answer", async ({ page }) => {
   await page.route("http://localhost:8000/api/**", async (route) => {
     const request = route.request();

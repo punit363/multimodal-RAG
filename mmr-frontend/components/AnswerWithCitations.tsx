@@ -63,7 +63,7 @@ export function AnswerWithCitations({ text, sources, onOpenPdf }: AnswerWithCita
               try { chunkId = decodeURIComponent(href.slice("citation:".length)); } catch { /* unmatched marker */ }
               const source = sources.find((chunk) => String(chunk.chunk_id) === chunkId);
               if (!source?.document_id) {
-                return <span title="This citation does not match an available PDF source" className="text-amber-600 dark:text-amber-400">[Unverified source]</span>;
+                return <span title="This citation does not match an available source" className="text-amber-600 dark:text-amber-400">[Unverified source]</span>;
               }
               const page = source.page_numbers?.[0];
               const label = `${source.filename || "Document"}, ${page ? `p.${page}` : "page unavailable"}`;

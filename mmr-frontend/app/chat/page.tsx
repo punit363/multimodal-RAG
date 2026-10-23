@@ -56,7 +56,14 @@ interface DocumentItem {
   error?: string;
   created_at?: string;
   tags?: string[];
+  folder_id?: string | null;
+  source_format?: string;
+  extraction?: { quality: string; warnings: string[]; preview?: Array<string | { page: number; text: string }> } | null;
+  review_status?: string;
 }
+
+interface FolderItem { id: string; name: string }
+interface SummaryItem { text: string; filename: string; document_id: string; chunk_id: string; section_title: string }
 
 interface SourceSet {
   id: string;
@@ -83,6 +90,12 @@ export default function ChatWorkspace() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
   const [sourceSets, setSourceSets] = useState<SourceSet[]>([]);
+  const [folders, setFolders] = useState<FolderItem[]>([]);
+  const [activeFolderId, setActiveFolderId] = useState("");
+  const [summaryItems, setSummaryItems] = useState<SummaryItem[]>([]);
+  const [summaryLabel, setSummaryLabel] = useState("");
+  const [reviewDocument, setReviewDocument] = useState<DocumentItem | null>(null);
+  const [webPageUrl, setWebPageUrl] = useState("");
   const [activeSourceSetId, setActiveSourceSetId] = useState("");
   const [filterPage, setFilterPage] = useState("");
   const [filterContentType, setFilterContentType] = useState("");
@@ -122,6 +135,10 @@ export default function ChatWorkspace() {
       (document) =>
         document.id === chunk.document_id || document.source_id === chunk.document_id
     );
+    if (registeredDocument && registeredDocument.source_format && registeredDocument.source_format !== "pdf") {
+      window.open(`${API_BASE_URL}/api/documents/${encodeURIComponent(registeredDocument.id)}/file`, "_blank", "noopener,noreferrer");
+      return;
+    }
     setActivePdfSource({
       ...chunk,
       document_id: registeredDocument?.id || chunk.document_id,
@@ -166,7 +183,7 @@ export default function ChatWorkspace() {
     } catch (err: unknown) {
       setWorkspaceError(getErrorMessage(err, "Could not load conversations."));
     }
-  }, []);
+  }, [setWorkspaceError]);
 
   // Load the document list. Newly seen documents are selected automatically;
   // documents that no longer exist are dropped from the selection.
@@ -196,7 +213,7 @@ export default function ChatWorkspace() {
     } catch (err: unknown) {
       setWorkspaceError(getErrorMessage(err, "Could not load documents."));
     }
-  }, []);
+  }, [setWorkspaceError]);
 
   const fetchSourceSets = useCallback(async () => {
     try {
@@ -208,16 +225,66 @@ export default function ChatWorkspace() {
     } catch (error) {
       setWorkspaceError(getErrorMessage(error, "Could not load source sets."));
     }
-  }, []);
+  }, [setWorkspaceError]);
+
+  const fetchFolders = useCallback(async () => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/folders`);
+      if (!response.ok) throw new Error(`Could not load folders (${response.status}).`);
+      setFolders(await response.json());
+    } catch (error) {
+      setWorkspaceError(getErrorMessage(error, "Could not load folders."));
+    }
+  }, [setWorkspaceError]);
 
   // Initial load: conversations + documents from the backend
   useEffect(() => {
     const loadTimer = window.setTimeout(() => {
-      void Promise.all([fetchConversations(), fetchDocuments(), fetchSourceSets()]);
+      void Promise.all([fetchConversations(), fetchDocuments(), fetchSourceSets(), fetchFolders()]);
     }, 0);
 
     return () => window.clearTimeout(loadTimer);
-  }, [fetchConversations, fetchDocuments, fetchSourceSets]);
+  }, [fetchConversations, fetchDocuments, fetchSourceSets, fetchFolders]);
+
+  const createWorkspaceFolder = async () => {
+    const name = window.prompt("Folder name")?.trim();
+    if (!name) return;
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/folders`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      if (!response.ok) throw new Error((await response.json()).detail || "Could not create folder.");
+      await fetchFolders();
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not create folder.")); }
+  };
+
+  const moveWorkspaceDocument = async (doc: DocumentItem, folderId: string) => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/documents/${encodeURIComponent(doc.id)}/folder`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder_id: folderId || null }) });
+      if (!response.ok) throw new Error("Could not move document.");
+      await fetchDocuments();
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not move document.")); }
+  };
+
+  const showSummary = async (scope: "document" | "section" | "collection", id: string, title?: string) => {
+    const params = new URLSearchParams({ scope });
+    params.set(scope === "collection" ? "source_set_id" : "document_id", id);
+    if (title) params.set("section_title", title);
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/summaries?${params}`);
+      if (!response.ok) throw new Error("Could not load summary.");
+      const result: { summary: { items: SummaryItem[] } } = await response.json();
+      setSummaryItems(result.summary.items);
+      setSummaryLabel(`${scope === "collection" ? "Collection" : scope === "section" ? "Section" : "Document"} source excerpts`);
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not load summary.")); }
+  };
+
+  const setReview = async (doc: DocumentItem, status: "accepted" | "needs_attention") => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/documents/${encodeURIComponent(doc.id)}/extraction`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
+      if (!response.ok) throw new Error("Could not save extraction review.");
+      await fetchDocuments();
+      setReviewDocument(null);
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not save extraction review.")); }
+  };
 
   const toggleDocument = (id: string) => {
     setSelectedDocIds((prev) => {
@@ -350,15 +417,16 @@ export default function ChatWorkspace() {
 
   // Document Upload Stream Handler
   const handleIngestStream = async (selectedFile: File): Promise<boolean> => {
-    if (selectedFile.type !== "application/pdf" || !selectedFile.name.toLowerCase().endsWith(".pdf")) {
+    const accepted = new Set([".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg", ".webp", ".tiff", ".html", ".htm"]);
+    if (![...accepted].some((ext) => selectedFile.name.toLowerCase().endsWith(ext))) {
       setIngestStep(1);
-      setIngestError("Choose a PDF file with the application/pdf MIME type.");
+      setIngestError("Choose a supported PDF, Office, image, or HTML file.");
       setLastIngestFile(selectedFile);
       return false;
     }
     if (selectedFile.size > 25 * 1024 * 1024) {
       setIngestStep(1);
-      setIngestError("PDF exceeds the 25 MB upload limit.");
+      setIngestError("File exceeds the 25 MB upload limit.");
       setLastIngestFile(selectedFile);
       return false;
     }
@@ -461,6 +529,30 @@ export default function ChatWorkspace() {
       setBatchItems((items) => items.map((item) => item.status === "pending" ? { ...item, status: "cancelled" } : item));
       setBatchRunning(false);
     }
+  };
+
+  const handleWebPage = async () => {
+    if (!webPageUrl.trim() || isIngesting || batchRunning) return;
+    const controller = new AbortController();
+    ingestControllerRef.current = controller;
+    setIsIngesting(true);
+    setIngestError("");
+    setIngestStep(1);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/ingest-web-page`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: webPageUrl.trim() }), signal: controller.signal,
+      });
+      if (!response.ok) throw new Error((await response.json()).detail || "Could not add web page.");
+      const events = (await response.text()).split("\n\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
+      const failure = events.find((event) => event.status === "error");
+      if (failure) throw new Error(failure.label);
+      if (!events.some((event) => event.status === "completed")) throw new Error("Web page ingestion ended without confirmation.");
+      setIngestStep(5);
+      setWebPageUrl("");
+      await fetchDocuments();
+    } catch (error) { setIngestError(getErrorMessage(error, "Could not add web page.")); }
+    finally { ingestControllerRef.current = null; setIsIngesting(false); }
   };
 
   const retryBatchItem = async (index: number) => {
@@ -966,10 +1058,10 @@ export default function ChatWorkspace() {
           <label className={`border-2 border-dashed border-neutral-300 dark:border-neutral-800 hover:border-[#D4AF37]/50 rounded-xl p-6 flex flex-col items-center justify-center gap-2 bg-neutral-50 dark:bg-neutral-950/40 transition-all ${isIngesting || batchRunning ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}>
             <UploadCloud size={20} className="text-neutral-500" />
             <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Drop files or click to upload</span>
-            <span className="text-[10px] text-neutral-500">Select multiple PDFs to upload in sequence</span>
+            <span className="text-[10px] text-neutral-500">PDF, DOCX, PPTX, XLSX, image, or HTML</span>
             <input
               type="file"
-              accept=".pdf"
+              accept=".pdf,.docx,.pptx,.xlsx,.png,.jpg,.jpeg,.webp,.tiff,.html,.htm"
               multiple
               disabled={isIngesting || batchRunning}
               className="hidden"
@@ -983,6 +1075,10 @@ export default function ChatWorkspace() {
               }}
             />
           </label>
+          <div className="flex gap-1">
+            <input aria-label="Public web page URL" value={webPageUrl} onChange={(event) => setWebPageUrl(event.target.value)} placeholder="https://example.com/page" className="min-w-0 flex-1 rounded border border-neutral-300 dark:border-neutral-700 bg-transparent px-2 py-1 text-xs" />
+            <button type="button" onClick={() => void handleWebPage()} disabled={!webPageUrl.trim() || isIngesting || batchRunning} className="text-xs text-[#D4AF37] disabled:opacity-50">Add page</button>
+          </div>
         </div>
 
         {ingestStep > 0 && (
@@ -1020,7 +1116,19 @@ export default function ChatWorkspace() {
               <button type="button" onClick={() => void saveSourceSet()} disabled={!selectedDocIds.size} className="disabled:opacity-50 hover:underline">Save selection</button>
               <button type="button" onClick={() => void updateSelectedSourceSet()} disabled={!activeSourceSetId || !selectedDocIds.size} className="disabled:opacity-50 hover:underline">Update set</button>
               <button type="button" onClick={() => void removeSelectedSourceSet()} disabled={!activeSourceSetId} className="disabled:opacity-50 hover:underline">Delete set</button>
+              <button type="button" onClick={() => void showSummary("collection", activeSourceSetId)} disabled={!activeSourceSetId} className="disabled:opacity-50 hover:underline">Summary</button>
             </div>
+          </div>
+          <div className="space-y-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+            <div className="flex justify-between text-xs"><span>Folders</span><button type="button" onClick={() => void createWorkspaceFolder()} className="text-[#D4AF37]">New</button></div>
+            <select aria-label="Filter documents by folder" value={activeFolderId} onChange={(event) => setActiveFolderId(event.target.value)} className="w-full rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-xs">
+              <option value="">All folders</option><option value="unfiled">Unfiled</option>
+              {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+            </select>
+            {activeFolderId && activeFolderId !== "unfiled" && <div className="flex gap-2 text-[10px] text-[#D4AF37]">
+              <button type="button" onClick={async () => { const folder = folders.find((item) => item.id === activeFolderId); const name = window.prompt("Rename folder", folder?.name)?.trim(); if (!name) return; const res = await fetchWithTimeout(`${API_BASE_URL}/api/folders/${activeFolderId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }); if (res.ok) await fetchFolders(); else setWorkspaceError("Could not rename folder."); }}>Rename</button>
+              <button type="button" onClick={async () => { if (!window.confirm("Delete this folder? Documents will become unfiled.")) return; const res = await fetchWithTimeout(`${API_BASE_URL}/api/folders/${activeFolderId}`, { method: "DELETE" }); if (res.ok) { setActiveFolderId(""); await Promise.all([fetchFolders(), fetchDocuments()]); } else setWorkspaceError("Could not delete folder."); }}>Delete</button>
+            </div>}
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
@@ -1039,7 +1147,7 @@ export default function ChatWorkspace() {
           {documents.length === 0 ? (
             <p className="text-xs text-neutral-500 dark:text-neutral-600 italic">No sources added yet</p>
           ) : (
-            documents.map((doc) => {
+            documents.filter((doc) => !activeFolderId || (activeFolderId === "unfiled" ? !doc.folder_id : doc.folder_id === activeFolderId)).map((doc) => {
               const isSelected = selectedDocIds.has(doc.id);
               const isDeleting = deletingDocId === doc.id;
               return (
@@ -1063,6 +1171,9 @@ export default function ChatWorkspace() {
                   <span className="truncate flex-1" title={doc.filename}>
                     {doc.filename}
                   </span>
+                  <button type="button" onClick={() => void showSummary("document", doc.id)} disabled={doc.status !== "ready"} className="text-[10px] text-[#D4AF37] disabled:opacity-50" aria-label={`Summarize ${doc.filename}`}>Summary</button>
+                  <button type="button" onClick={() => setReviewDocument(doc)} disabled={doc.status !== "ready"} className="text-[10px] text-[#D4AF37] disabled:opacity-50" aria-label={`Review extraction for ${doc.filename}`}>Review{doc.extraction?.quality === "review_recommended" && doc.review_status === "unreviewed" ? " !" : ""}</button>
+                  <select aria-label={`Folder for ${doc.filename}`} value={doc.folder_id || ""} onChange={(event) => void moveWorkspaceDocument(doc, event.target.value)} disabled={doc.status !== "ready"} className="max-w-16 bg-transparent text-[10px]"><option value="">Unfiled</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select>
                   <button type="button" onClick={() => void editDocumentTags(doc)} disabled={isDeleting || (!!doc.status && doc.status !== "ready")} className="text-[10px] text-[#D4AF37] hover:underline disabled:opacity-50" title={(doc.tags || []).join(", ") || "No tags"} aria-label={`Edit tags for ${doc.filename}`}>
                     {doc.tags?.length ? `${doc.tags.length} tags` : "Tags"}
                   </button>
@@ -1094,6 +1205,8 @@ export default function ChatWorkspace() {
       )}
 
       <CitationLightbox data={activeLightbox} onClose={() => setActiveLightbox(null)} />
+      {summaryLabel && <div role="dialog" aria-label={summaryLabel} className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white dark:bg-neutral-900 p-5 space-y-3"><div className="flex justify-between"><h2 className="font-semibold">{summaryLabel}</h2><button onClick={() => setSummaryLabel("")}>Close</button></div><p className="text-xs text-neutral-500">Extractive excerpts with source chunk IDs; no generated claims.</p>{summaryItems.length ? summaryItems.map((item) => <div key={item.chunk_id} className="text-sm border-t pt-2"><p>{item.text}</p><p className="text-xs text-[#D4AF37]">{item.filename} · {item.section_title} · {item.chunk_id}</p><button type="button" onClick={() => void showSummary("section", item.document_id, item.section_title)} className="text-xs underline">View section</button></div>) : <p>No indexed text excerpts found.</p>}</div></div>}
+      {reviewDocument && <div role="dialog" aria-label={`Extraction review for ${reviewDocument.filename}`} className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white dark:bg-neutral-900 p-5 space-y-3"><div className="flex justify-between"><h2 className="font-semibold">{reviewDocument.filename} extraction</h2><button onClick={() => setReviewDocument(null)}>Close</button></div><p className="text-sm">Quality: {reviewDocument.extraction?.quality || "Unavailable for older documents"} · Review: {reviewDocument.review_status || "unreviewed"}</p>{reviewDocument.extraction?.warnings?.map((warning, index) => <p key={index} className="text-sm text-amber-500">{warning}</p>)}{reviewDocument.extraction?.preview?.map((part, index) => <p key={index} className="border-t pt-2 text-xs">{typeof part === "string" ? part : `Page ${part.page}: ${part.text || "No extracted text"}`}</p>)}<div className="flex gap-3 text-sm text-[#D4AF37]"><button onClick={() => void setReview(reviewDocument, "accepted")}>Accept extraction</button><button onClick={() => void setReview(reviewDocument, "needs_attention")}>Flag for review</button></div></div></div>}
     </div>
   );
 }

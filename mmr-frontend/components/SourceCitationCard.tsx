@@ -29,7 +29,7 @@ export function SourceCitationCard({ chunk, onOpenLightbox, onOpenPdf }: SourceC
         <span className="text-[#D4AF37] font-semibold">Chunk #{chunk.chunk_id}</span>
         {chunk.document_id && onOpenPdf ? (
           <button type="button" onClick={() => onOpenPdf(chunk)} className="text-[10px] text-[#D4AF37] hover:underline">
-            Open PDF {chunk.page_numbers?.length ? `p.${chunk.page_numbers[0]}` : "source"}
+            {chunk.filename?.toLowerCase().endsWith(".pdf") ? `Open PDF ${chunk.page_numbers?.length ? `p.${chunk.page_numbers[0]}` : "source"}` : "Download source"}
           </button>
         ) : null}
       </div>
