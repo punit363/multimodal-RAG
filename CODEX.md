@@ -141,7 +141,7 @@ After each priority, update the Phase 3 Notion page with implemented features, c
 
 ## Phase 4 — Product Expansion
 
-**Status:** In progress — Low-priority feature implementation complete October 23, 2026; Medium and High priorities remain planned.
+**Status:** In progress — Low and Medium feature implementation complete October 23, 2026; High priority remains planned.
 
 **Objective:** Turn the PDF demo into a broader document-intelligence workspace. The [Phase 4 engineering log](https://app.notion.com/p/3fa7cd5908fc81d1b42bfa414f65d954) records progress after each priority. Execute Low → Medium → High with reviewable commits within each priority.
 
@@ -156,11 +156,13 @@ After each priority, update the Phase 3 Notion page with implemented features, c
 
 ### Medium priority — organization, formats, and review
 
-- [ ] Add folders for organizing documents, plus document, section, and collection summaries.
-- [ ] Add DOCX, PPTX, XLSX, image, and web-page ingestion with format-specific extraction and retrieval fixtures.
-- [ ] Add scanned-PDF OCR quality checks and an extraction review workflow; make partial or uncertain extraction visible.
+- [x] Add folders for organizing documents, plus document, section, and collection summaries.
+- [x] Add DOCX, PPTX, XLSX, image, and web-page ingestion with format-specific extraction and retrieval fixtures.
+- [x] Add scanned-PDF OCR quality checks and an extraction review workflow; make partial or uncertain extraction visible.
 
 **Acceptance:** Every supported format has a verified ingestion and retrieval fixture. Users can review extraction quality, navigate folders, and inspect summaries at each supported level.
+
+**Medium-priority implementation:** Folders persist in SQLite; documents can move between folders, and removing a folder leaves its documents unfiled. Document, section, and saved-set summaries expose bounded extractive text with chunk IDs. DOCX, PPTX, XLSX, image OCR, and uploaded or public-URL HTML sources pass through the existing ingest/index lifecycle; non-PDF sources can be downloaded by registered ID. Office ZIP extraction is bounded, and public URL fetching rejects private addresses, redirects, and oversized/non-HTML responses. PDF extraction reports flag pages with little extracted text or missing page locations; image OCR is marked for review. Reviewers can inspect excerpts and accept or flag an extraction. These are heuristic checks, not OCR confidence scores. Synthetic fixtures verify extraction-to-index text for each format; no representative user corpus was used. Validation: 62 backend tests, 9 frontend component tests, 12 Chromium end-to-end tests, lint, TypeScript, webpack production build, and Git whitespace checks passed. Backend and frontend implementation commits: `534187d`, `057d981`; documentation and additional fixture tests are in the completion commit. Next: High-priority structured outputs, multilingual support, and collaboration. Phase 3 representative quality evaluation remains deferred.
 
 ### High priority — advanced outputs and collaboration
 

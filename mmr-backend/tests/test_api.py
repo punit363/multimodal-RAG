@@ -354,6 +354,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/documents/{docs[0]['id']}/file").content, output.getvalue())
         self.assertEqual(self.client.get(f"/api/documents/{docs[0]['id']}/pdf").status_code, 404)
 
+    def test_public_web_page_uses_html_ingestion_path(self):
+        with patch.object(main, "_fetch_public_web_page", return_value=("example.org", b"<h1>Overview</h1><p>Launch target is 2030.</p>")):
+            response = self.client.post("/api/ingest-web-page", json={"url": "https://example.org/overview"})
+        self.assertIn('"status": "completed"', response.text)
+        document = self.client.get("/api/documents").json()[0]
+        self.assertEqual(document["source_format"], "html")
+        self.assertIn("Launch target", document["extraction"]["preview"][0])
+
     def test_ingestion_rejects_wrong_mime_signature_and_oversized_files(self):
         wrong_mime = self.client.post(
             "/api/ingest-stream",

@@ -17,6 +17,16 @@ def element(name, text, page, **metadata):
 
 
 class HighPriorityPipelineTests(unittest.TestCase):
+    def test_extractive_summary_keeps_source_ids_and_section_scope(self):
+        result = {"documents": ["Revenue rose 12 percent", "Margin grew 3 percent"],
+                  "metadatas": [{"representation_type": "text", "filename": "report.pdf", "chunk_id": "chunk-1", "section_title": "Results"},
+                                {"representation_type": "text", "filename": "report.pdf", "chunk_id": "chunk-2", "section_title": "Outlook"}]}
+        with patch.object(rag_pipeline.vectorstore._collection, "get", return_value=result):
+            summary = rag_pipeline.summarize_evidence(["doc-1"], "Results")
+        self.assertEqual(summary["total_matching_chunks"], 1)
+        self.assertEqual(summary["items"][0]["chunk_id"], "chunk-1")
+        self.assertEqual(summary["items"][0]["document_id"], "doc-1")
+
     def test_ingestion_indexes_separate_evidence_with_shared_parent(self):
         text = element("NarrativeText", "Revenue increased", 2)
         table = element("Table", "Revenue 20", 2, text_as_html="<table><tr><td>Revenue</td><td>20</td></tr></table>")

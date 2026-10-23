@@ -1,6 +1,6 @@
 # MultiModal RAG
 
-MultiModal RAG is a document-question-answering application for PDFs containing text, tables, and images. The backend partitions and chunks uploaded PDFs, creates searchable multimodal summaries, stores embeddings in Chroma, and streams grounded answers. The frontend provides document selection, ingestion progress, conversation history, and citation previews.
+MultiModal RAG is a document-question-answering application for PDFs, Office files, images, and web pages. The backend extracts and chunks sources, stores searchable evidence in Chroma, and streams grounded answers. The frontend provides document organization, ingestion progress, conversation history, summaries, and citation previews.
 
 ## Architecture
 
@@ -100,7 +100,7 @@ The completed Phase 1 and Phase 2 records and the prioritized Phase 3 roadmap ar
 
 ## Current limitations
 
-- Only PDF uploads are supported.
+- DOCX, PPTX, XLSX, image, and HTML extraction currently indexes text. PDF extraction also preserves tables and images. Image files require Tesseract OCR; non-PDF source cards download the original file rather than opening the PDF viewer.
 - Authentication and workspace isolation are not implemented.
 - Ingestion runs within the API process and is intended for local MVP use.
 - Phase 2 is complete. Existing PDFs need re-ingestion for new element-type, location-status, and content-type metadata. A representative quality evaluation remains open in Phase 3.
@@ -120,11 +120,11 @@ Newly ingested PDFs are chunked within page and section boundaries. Text, table-
 
 Enable **Compare selected documents** in chat after selecting two to four ready PDFs. The backend retrieves evidence from each selected document and requires registered citations from every document in the generated comparison. If one document has no matching evidence, it returns the insufficient-evidence response; if the generated comparison omits a document citation, it shows a verification failure instead. The non-streaming API also accepts `"mode": "compare"` with two to four distinct `sources` IDs. Representative comparison quality has not been measured because that evaluation was deferred.
 
-Phase 4 starts with multiple-PDF upload through the existing validated ingestion stream. Files run in sequence, each file has a visible outcome, and failures can be retried without repeating successful files. Cancelling the current upload stops the remaining queue. In the Knowledge Base sidebar, **Save selection** creates a named source set from ready documents; choose it later to restore the selection, or update/delete it. Source sets are persisted in SQLite, and deleting a document removes it from saved sets. Folder organization, additional formats, summaries, extraction review, structured outputs, multilingual support, and sharing remain planned in the [Phase 4 roadmap](CODEX.md).
+Phase 4 accepts PDF, DOCX, PPTX, XLSX, PNG/JPEG/WebP/TIFF, and HTML files in the upload queue. Paste a public HTTP(S) URL into **Add page** to ingest its HTML; private network destinations, redirects, and oversized pages are rejected. Files run in sequence, each file has a visible outcome, and failures can be retried independently. In the Knowledge Base sidebar, **Save selection** persists named source sets. Create folders, move documents, and filter by folder. **Summary** shows short extractive excerpts with source chunk IDs for a document, section, or saved set. **Review** shows extraction warnings and previews, and records an accepted or needs-attention decision. Low-text PDF pages and image OCR are flagged for review. These checks are heuristics; verify important facts against the original source. Structured outputs, multilingual support, and sharing remain in the [Phase 4 roadmap](CODEX.md).
 
 ## Runtime safety behavior
 
-- Uploads are checked for PDF extension, MIME type, signature, size, readability, encryption, and page count before ingestion.
+- PDFs are checked for extension, MIME type, signature, size, readability, encryption, and page count. Other formats use MIME, size, signature/container, and extractor checks.
 - Stored files use generated document IDs, so duplicate display filenames cannot overwrite each other.
 - Extracted table HTML is sanitized before indexing and again before retrieval.
 - Failed or cancelled ingestion removes partial vectors, files, and registry data; cleanup failures are quarantined and recorded.
