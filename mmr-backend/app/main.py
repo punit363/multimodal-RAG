@@ -37,6 +37,7 @@ from app.rag_pipeline import (
 )
 from app.structured_outputs import build_structured_output
 from app.language import response_language
+from app.operations import readiness_checks
 from app.retrieval_filters import RetrievalFilters
 from app.document_extract import extract_sections
 from app.database import (
@@ -129,7 +130,7 @@ def _owner_session_valid(cookie: Optional[str]) -> bool:
 async def owner_access(request: Request, call_next):
     """Keep private APIs behind an owner session when sharing is enabled."""
     path = request.url.path
-    public = path == "/" or path in {"/api/auth/status", "/api/auth/login"} or path.startswith("/api/public-shares/")
+    public = path in {"/", "/health/live", "/health/ready", "/api/auth/status", "/api/auth/login"} or path.startswith("/api/public-shares/")
     if request.method == "OPTIONS" or not _owner_key() or public or _owner_session_valid(request.cookies.get("rag_owner")):
         return await call_next(request)
     response = JSONResponse(status_code=401, content={"detail": "Owner session required."})
@@ -140,6 +141,7 @@ async def owner_access(request: Request, call_next):
     return response
 
 UPLOAD_DIR = os.getenv("RAG_UPLOAD_DIR", "docs")
+VECTOR_DIR = os.getenv("RAG_VECTOR_DIR", "db/chroma_db")
 MAX_UPLOAD_BYTES = int(os.getenv("RAG_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
 MAX_PDF_PAGES = int(os.getenv("RAG_MAX_PDF_PAGES", "200"))
 QUARANTINE_DIR = os.path.join(UPLOAD_DIR, ".quarantine")
@@ -295,6 +297,20 @@ class ShareCommentRequest(BaseModel):
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "Multi-Modal RAG API is running"}
+
+
+@app.get("/health/live")
+def health_live():
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    checks = readiness_checks(UPLOAD_DIR, VECTOR_DIR)
+    ready = all(status == "ok" for status in checks.values())
+    return JSONResponse(status_code=200 if ready else 503, content={
+        "status": "ready" if ready else "not_ready", "checks": checks,
+    })
 
 
 @app.get("/api/auth/status")

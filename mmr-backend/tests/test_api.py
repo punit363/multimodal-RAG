@@ -73,6 +73,25 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(created.status_code, 200)
         self.assertEqual(conversations.json()[0]["title"], "Quarterly review")
 
+    def test_liveness_and_readiness_distinguish_dependency_failure(self):
+        root = Path(self._temporary_directory.name)
+        vector_dir = root / "vectors"
+        vector_dir.mkdir()
+        with patch.object(main, "VECTOR_DIR", str(vector_dir)):
+            ready = self.client.get("/health/ready")
+            self.assertEqual(ready.status_code, 200)
+            self.assertEqual(ready.json()["checks"], {
+                "database": "ok", "uploads": "ok", "vectors": "ok",
+            })
+            with patch.object(database, "DB_PATH", str(root / "missing.db")):
+                unavailable = self.client.get("/health/ready")
+                self.assertEqual(unavailable.status_code, 503)
+                self.assertEqual(unavailable.json()["checks"]["database"], "failed")
+                self.assertFalse((root / "missing.db").exists())
+            vector_dir.rmdir()
+            self.assertEqual(self.client.get("/health/ready").status_code, 503)
+            self.assertEqual(self.client.get("/health/live").json(), {"status": "alive"})
+
     def test_chat_stream_forwards_selected_sources_and_persists_messages(self):
         captured = {}
         source = {"filename": "report.pdf", "chunk_id": 1}

@@ -178,3 +178,36 @@ After each priority, update the Phase 3 Notion page with implemented features, c
 
 After each priority, update the Phase 4 Notion page with implemented features, changed files, new and updated function/class names plus short descriptions, commits, validation results, learnings, blockers, and next steps. Update the main engineering log's quick phase summary with a link to the full Phase 4 details.
 
+## Phase 5 — Production Readiness
+
+**Status:** In progress. Execute Low → Medium → High in reviewable commits. The [Phase 5 engineering log](https://app.notion.com/p/3fa7cd5908fc81baadaad13ceaa29bd2) tracks evidence after each priority.
+
+**Objective:** Support real users, larger collections, and safe operations. A local single-owner release remains distinct from a production multi-tenant service.
+
+### Low priority — operational foundation
+
+- [ ] Add separate liveness and dependency-aware readiness probes; use readiness for the backend container health check.
+- [ ] Emit structured, request-correlated API access logs without recording query text, share tokens, credentials, or document content.
+- [ ] Version the existing SQLite schema and fail clearly if the application opens a newer, unsupported schema; test upgrade from legacy tables and repeat startup.
+- [ ] Document probe behavior, logging fields, schema migration checks, and a local incident triage runbook.
+
+**Acceptance:** A missing/unusable database or upload path makes readiness fail while liveness remains available. Requests return a correlation ID and logs omit sensitive path/query/body data. Existing databases migrate idempotently; an unsupported future schema does not start. CI runs focused tests.
+
+### Medium priority — operational controls and recovery
+
+- [ ] Add rate limits, quotas, and privacy-safe audit events for privileged and costly operations.
+- [ ] Define retention/deletion policy and implement verifiable cleanup of expired shares and retained records.
+- [ ] Add consistent backup/restore and migration procedures for SQLite, uploaded originals, and vector data; verify recovery in an isolated environment.
+- [ ] Add metrics, tracing, dashboards, and error monitoring with bounded labels and redaction.
+
+### High priority — multi-user scale and delivery
+
+- [ ] Add authentication, tenant/workspace isolation, and role-based access across APIs, documents, vectors, conversations, and shares.
+- [ ] Move durable metadata and originals to PostgreSQL and object storage with tested migrations.
+- [ ] Move ingestion to durable background workers with retries and dead-letter handling.
+- [ ] Add managed secrets, deployment environments, automated deployment/rollback, and load/security/recovery/end-to-end acceptance tests against defined targets.
+
+### Execution record for every priority
+
+After each priority, update the Phase 5 Notion page with implemented features, changed files, new and updated function/class names plus short descriptions, commits, validation results, learnings, blockers, and next steps. Update the main engineering log's quick phase summary with a link to the full Phase 5 details.
+

@@ -28,7 +28,7 @@ from app.language import ocr_languages, language_instruction, insufficient_evide
 
 load_dotenv()
 
-PERSIST_DIR = "db/chroma_db"
+PERSIST_DIR = os.getenv("RAG_VECTOR_DIR", "db/chroma_db")
 UNVERIFIED_COMPARISON_ANSWER = "The comparison could not be verified against every selected document. Try a more specific question."
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
