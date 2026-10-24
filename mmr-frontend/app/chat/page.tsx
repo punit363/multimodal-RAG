@@ -71,6 +71,8 @@ interface SourceSet {
   document_ids: string[];
 }
 
+interface ShareItem { id: string; resource_type: string; resource_id: string; permission: string; expires_at: string }
+
 interface BatchItem {
   file: File;
   status: "pending" | "uploading" | "completed" | "failed" | "cancelled";
@@ -103,6 +105,15 @@ export default function ChatWorkspace() {
   const [filterCreatedTo, setFilterCreatedTo] = useState("");
   const [filterTag, setFilterTag] = useState("");
   const [comparisonMode, setComparisonMode] = useState(false);
+  const [answerLanguage, setAnswerLanguage] = useState("auto");
+  const [outputResult, setOutputResult] = useState<Record<string, unknown> | null>(null);
+  const [outputKind, setOutputKind] = useState("extraction");
+  const [authChecked, setAuthChecked] = useState(false);
+  const [workspaceLocked, setWorkspaceLocked] = useState(false);
+  const [ownerKeyInput, setOwnerKeyInput] = useState("");
+  const [sharePermission, setSharePermission] = useState<"view" | "comment">("view");
+  const [shares, setShares] = useState<ShareItem[]>([]);
+  const [createdShareLink, setCreatedShareLink] = useState("");
   const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
   const knownDocIdsRef = useRef<Set<string>>(new Set());
 
@@ -237,14 +248,81 @@ export default function ChatWorkspace() {
     }
   }, [setWorkspaceError]);
 
+  useEffect(() => {
+    void fetchWithTimeout(`${API_BASE_URL}/api/auth/status`).then(async (response) => {
+      if (response.ok) {
+        const status: { required: boolean; authenticated: boolean } = await response.json();
+        setWorkspaceLocked(status.required && !status.authenticated);
+      }
+    }).catch(() => undefined).finally(() => setAuthChecked(true));
+  }, []);
+
+  const unlockWorkspace = async () => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: ownerKeyInput }) });
+      if (!response.ok) throw new Error("Owner key was not accepted.");
+      setOwnerKeyInput("");
+      setWorkspaceError("");
+      setWorkspaceLocked(false);
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not unlock workspace.")); }
+  };
+
+  const fetchShares = useCallback(async () => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/shares`);
+      if (response.ok) setShares(await response.json());
+    } catch { /* Sharing is optional until an owner key is configured. */ }
+  }, []);
+
   // Initial load: conversations + documents from the backend
   useEffect(() => {
+    if (!authChecked || workspaceLocked) return;
     const loadTimer = window.setTimeout(() => {
-      void Promise.all([fetchConversations(), fetchDocuments(), fetchSourceSets(), fetchFolders()]);
+      void Promise.all([fetchConversations(), fetchDocuments(), fetchSourceSets(), fetchFolders(), fetchShares()]);
     }, 0);
 
     return () => window.clearTimeout(loadTimer);
-  }, [fetchConversations, fetchDocuments, fetchSourceSets, fetchFolders]);
+  }, [authChecked, workspaceLocked, fetchConversations, fetchDocuments, fetchSourceSets, fetchFolders, fetchShares]);
+
+  const runStructuredOutput = async (kind: string) => {
+    const ids = readyDocuments.filter((doc) => selectedDocIds.has(doc.id)).map((doc) => doc.id);
+    if (!ids.length) return;
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/outputs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, document_ids: ids }) }, 30000);
+      if (!response.ok) throw new Error((await response.json()).detail || "Could not create output.");
+      setOutputResult(await response.json());
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not create output.")); }
+  };
+
+  const downloadReport = async () => {
+    const ids = readyDocuments.filter((doc) => selectedDocIds.has(doc.id)).map((doc) => doc.id);
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/outputs/report.md`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "report", document_ids: ids }) }, 30000);
+      if (!response.ok) throw new Error("Could not export report.");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a"); link.href = url; link.download = "source-report.md"; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not export report.")); }
+  };
+
+  const createShareLink = async (resourceType: "collection" | "conversation", resourceId: string) => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/shares`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ resource_type: resourceType, resource_id: resourceId, permission: sharePermission }) });
+      if (!response.ok) throw new Error((await response.json()).detail || "Could not create share link.");
+      const share: ShareItem & { token: string } = await response.json();
+      setCreatedShareLink(`${window.location.origin}/shared/${share.token}`);
+      await fetchShares();
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not create share link.")); }
+  };
+
+  const revokeShareLink = async (id: string) => {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/shares/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Could not revoke share link.");
+      setCreatedShareLink("");
+      await fetchShares();
+    } catch (error) { setWorkspaceError(getErrorMessage(error, "Could not revoke share link.")); }
+  };
 
   const createWorkspaceFolder = async () => {
     const name = window.prompt("Folder name")?.trim();
@@ -450,6 +528,7 @@ export default function ChatWorkspace() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/ingest-stream`, {
         method: "POST",
+        credentials: "include",
         body: formData,
         signal: controller.signal,
       });
@@ -541,6 +620,7 @@ export default function ChatWorkspace() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/ingest-web-page`, {
         method: "POST", headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ url: webPageUrl.trim() }), signal: controller.signal,
       });
       if (!response.ok) throw new Error((await response.json()).detail || "Could not add web page.");
@@ -664,6 +744,7 @@ export default function ChatWorkspace() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/chat-stream`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: currentQuery,
@@ -673,6 +754,7 @@ export default function ChatWorkspace() {
           top_k: 3,
           sources: selectedDocumentIds,
           mode: comparisonMode ? "compare" : "answer",
+          language: answerLanguage,
           filters: {
             pages: filterPage ? [Number(filterPage)] : [],
             content_types: filterContentType ? [filterContentType] : [],
@@ -1011,6 +1093,11 @@ export default function ChatWorkspace() {
             <input type="checkbox" checked={comparisonMode} onChange={(event) => setComparisonMode(event.target.checked)} aria-label="Compare selected documents" />
             Compare selected documents (select 2–4)
           </label>
+          <label className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">Answer language
+            <select aria-label="Answer language" value={answerLanguage} onChange={(event) => setAnswerLanguage(event.target.value)} className="rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1">
+              <option value="auto">Auto (English/Hindi)</option><option value="en">English</option><option value="hi">Hindi</option><option value="es">Spanish</option><option value="fr">French</option>
+            </select>
+          </label>
           <form onSubmit={handleSearch} className="max-w-3xl mx-auto flex gap-2">
             <input
               type="text"
@@ -1119,6 +1206,18 @@ export default function ChatWorkspace() {
               <button type="button" onClick={() => void showSummary("collection", activeSourceSetId)} disabled={!activeSourceSetId} className="disabled:opacity-50 hover:underline">Summary</button>
             </div>
           </div>
+          <div className="space-y-2 pb-3 border-b border-neutral-200 dark:border-neutral-800 text-xs">
+            <label className="block text-neutral-600 dark:text-neutral-400" htmlFor="output-kind">Cited output</label>
+            <div className="flex gap-1"><select id="output-kind" value={outputKind} onChange={(event) => setOutputKind(event.target.value)} className="min-w-0 flex-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1"><option value="extraction">Extract facts</option><option value="timeline">Timeline</option><option value="matrix">Comparison matrix</option><option value="report">Report</option></select><button type="button" onClick={() => void runStructuredOutput(outputKind)} disabled={!selectedDocIds.size} className="text-[#D4AF37] disabled:opacity-50">Create</button></div>
+            <button type="button" onClick={() => void downloadReport()} disabled={!selectedDocIds.size} className="text-[#D4AF37] disabled:opacity-50">Download cited report</button>
+          </div>
+          <div className="space-y-2 pb-3 border-b border-neutral-200 dark:border-neutral-800 text-xs">
+            <span className="block text-neutral-600 dark:text-neutral-400">Share and comments</span>
+            <select aria-label="Share permission" value={sharePermission} onChange={(event) => setSharePermission(event.target.value as "view" | "comment")} className="w-full rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1"><option value="view">View only</option><option value="comment">View and comment</option></select>
+            <div className="flex gap-2 text-[#D4AF37]"><button type="button" disabled={!activeSourceSetId} onClick={() => void createShareLink("collection", activeSourceSetId)} className="disabled:opacity-50">Share set</button><button type="button" disabled={!activeConversationId} onClick={() => activeConversationId && void createShareLink("conversation", activeConversationId)} className="disabled:opacity-50">Share chat</button></div>
+            {createdShareLink && <div className="break-all"><a href={createdShareLink} target="_blank" rel="noreferrer" className="text-[#D4AF37] underline">Open new share link</a><button type="button" onClick={() => void navigator.clipboard.writeText(createdShareLink)} className="ml-2 text-[#D4AF37]">Copy link</button><p className="text-neutral-500">Copy this link now; its token is shown only once.</p></div>}
+            {shares.map((share) => <div key={share.id} className="flex justify-between gap-1 text-[10px]"><span className="truncate">{share.resource_type} · {share.permission} · expires {share.expires_at.slice(0, 10)}</span><button type="button" onClick={() => void revokeShareLink(share.id)} className="text-red-500">Revoke</button></div>)}
+          </div>
           <div className="space-y-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
             <div className="flex justify-between text-xs"><span>Folders</span><button type="button" onClick={() => void createWorkspaceFolder()} className="text-[#D4AF37]">New</button></div>
             <select aria-label="Filter documents by folder" value={activeFolderId} onChange={(event) => setActiveFolderId(event.target.value)} className="w-full rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-xs">
@@ -1205,6 +1304,8 @@ export default function ChatWorkspace() {
       )}
 
       <CitationLightbox data={activeLightbox} onClose={() => setActiveLightbox(null)} />
+      {outputResult && <div role="dialog" aria-label="Cited output" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="max-h-[80vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white dark:bg-neutral-900 p-5 space-y-3"><div className="flex justify-between"><h2 className="font-semibold">Cited {String(outputResult.kind)}</h2><button onClick={() => setOutputResult(null)}>Close</button></div><p className="text-xs text-neutral-500">Extractive output; each item points to an indexed source chunk.</p><pre className="whitespace-pre-wrap break-words text-xs">{outputResult.markdown ? String(outputResult.markdown) : JSON.stringify(outputResult.items, null, 2)}</pre></div></div>}
+      {workspaceLocked && <div role="dialog" aria-label="Unlock workspace" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4"><form onSubmit={(event) => { event.preventDefault(); void unlockWorkspace(); }} className="w-full max-w-sm rounded-xl bg-white dark:bg-neutral-900 p-5 space-y-3"><h2 className="font-semibold">Unlock workspace</h2><p className="text-sm text-neutral-500">Enter the owner key configured on the backend.</p><input aria-label="Owner key" type="password" value={ownerKeyInput} onChange={(event) => setOwnerKeyInput(event.target.value)} className="w-full rounded border px-2 py-1 bg-transparent" /><button type="submit" className="text-[#D4AF37]">Unlock</button>{workspaceError && <p role="alert" className="text-red-500 text-xs">{workspaceError}</p>}</form></div>}
       {summaryLabel && <div role="dialog" aria-label={summaryLabel} className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white dark:bg-neutral-900 p-5 space-y-3"><div className="flex justify-between"><h2 className="font-semibold">{summaryLabel}</h2><button onClick={() => setSummaryLabel("")}>Close</button></div><p className="text-xs text-neutral-500">Extractive excerpts with source chunk IDs; no generated claims.</p>{summaryItems.length ? summaryItems.map((item) => <div key={item.chunk_id} className="text-sm border-t pt-2"><p>{item.text}</p><p className="text-xs text-[#D4AF37]">{item.filename} · {item.section_title} · {item.chunk_id}</p><button type="button" onClick={() => void showSummary("section", item.document_id, item.section_title)} className="text-xs underline">View section</button></div>) : <p>No indexed text excerpts found.</p>}</div></div>}
       {reviewDocument && <div role="dialog" aria-label={`Extraction review for ${reviewDocument.filename}`} className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white dark:bg-neutral-900 p-5 space-y-3"><div className="flex justify-between"><h2 className="font-semibold">{reviewDocument.filename} extraction</h2><button onClick={() => setReviewDocument(null)}>Close</button></div><p className="text-sm">Quality: {reviewDocument.extraction?.quality || "Unavailable for older documents"} · Review: {reviewDocument.review_status || "unreviewed"}</p>{reviewDocument.extraction?.warnings?.map((warning, index) => <p key={index} className="text-sm text-amber-500">{warning}</p>)}{reviewDocument.extraction?.preview?.map((part, index) => <p key={index} className="border-t pt-2 text-xs">{typeof part === "string" ? part : `Page ${part.page}: ${part.text || "No extracted text"}`}</p>)}<div className="flex gap-3 text-sm text-[#D4AF37]"><button onClick={() => void setReview(reviewDocument, "accepted")}>Accept extraction</button><button onClick={() => void setReview(reviewDocument, "needs_attention")}>Flag for review</button></div></div></div>}
     </div>

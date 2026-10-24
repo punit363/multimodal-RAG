@@ -26,7 +26,7 @@ export async function fetchWithTimeout(
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(new Error("Request timed out.")), timeoutMs);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await fetch(input, { credentials: "include", ...init, signal: controller.signal });
   } finally {
     window.clearTimeout(timeout);
   }

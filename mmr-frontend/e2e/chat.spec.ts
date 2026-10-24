@@ -2,6 +2,38 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
+test("creates cited outputs, forwards language, and creates a share link", async ({ page }) => {
+  let chatLanguage = "";
+  await page.route("http://localhost:8000/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (pathname === "/api/auth/status") return route.fulfill({ json: { required: false, authenticated: true } });
+    if (pathname === "/api/conversations" && method === "GET") return route.fulfill({ json: [{ id: "chat-1", title: "Review", messages: [] }] });
+    if (pathname === "/api/documents") return route.fulfill({ json: [{ id: "doc-1", filename: "report.pdf", status: "ready" }] });
+    if (pathname === "/api/source-sets") return route.fulfill({ json: [{ id: "set-1", name: "Research", document_ids: ["doc-1"] }] });
+    if (pathname === "/api/folders") return route.fulfill({ json: [] });
+    if (pathname === "/api/shares" && method === "GET") return route.fulfill({ json: [] });
+    if (pathname === "/api/shares" && method === "POST") return route.fulfill({ json: { id: "share-1", token: "sample-secret", resource_type: "collection", resource_id: "set-1", permission: "comment" } });
+    if (pathname === "/api/outputs") return route.fulfill({ json: { kind: "timeline", items: [{ date: "2026-02-01", text: "Revenue rose", chunk_id: "doc-1::chunk:1" }] } });
+    if (pathname === "/api/chat-stream") { chatLanguage = route.request().postDataJSON().language; return route.fulfill({ contentType: "text/event-stream", body: `data: ${JSON.stringify({ type: "done" })}\n\n` }); }
+    return route.abort();
+  });
+  await page.goto("/chat");
+  await expect(page.getByLabel("Use report.pdf as a source")).toBeChecked();
+  await page.getByLabel("Cited output").selectOption("timeline");
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(page.getByText("doc-1::chunk:1")).toBeVisible();
+  await page.getByRole("dialog", { name: "Cited output" }).getByRole("button", { name: "Close" }).click();
+  await page.getByLabel("Answer language").selectOption("es");
+  await page.getByPlaceholder("Ask a question about your selected documents...").fill("¿Ingresos?");
+  await page.getByPlaceholder("Ask a question about your selected documents...").press("Enter");
+  await expect.poll(() => chatLanguage).toBe("es");
+  await page.getByLabel("Saved source sets").selectOption("set-1");
+  await page.getByLabel("Share permission").selectOption("comment");
+  await page.getByRole("button", { name: "Share set" }).click();
+  await expect(page.getByRole("link", { name: "Open new share link" })).toHaveAttribute("href", /\/shared\/sample-secret$/);
+});
+
 test("organizes a document and reviews source-backed extraction", async ({ page }) => {
   let folderId: string | null = null;
   let reviewStatus = "unreviewed";
