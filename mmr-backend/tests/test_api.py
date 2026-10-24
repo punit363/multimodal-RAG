@@ -1,5 +1,6 @@
 import json
 import io
+import os
 import sys
 import tempfile
 import zipfile
@@ -386,6 +387,42 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(captured["language"], "es")
         self.assertEqual(self.client.post("/api/chat", json={"query": "收入是多少？"}).status_code, 422)
         self.assertEqual(self.client.post("/api/chat", json={"query": "Revenue?", "language": "xx"}).status_code, 422)
+
+    def test_share_permissions_revocation_and_owner_session(self):
+        database.add_document("report.pdf", doc_id="report", storage_name="report.pdf")
+        collection = database.create_source_set("Research", ["report"])
+        key = "owner-secret-longer-than-thirty-two-characters"
+        with patch.dict(os.environ, {"RAG_OWNER_API_KEY": key}):
+            self.assertEqual(self.client.get("/api/documents").status_code, 401)
+            self.assertEqual(self.client.post("/api/auth/login", json={"key": "wrong"}).status_code, 401)
+            self.assertEqual(self.client.post("/api/auth/login", json={"key": key}).status_code, 200)
+            created = self.client.post("/api/shares", json={"resource_type": "collection", "resource_id": collection["id"], "permission": "view"})
+            self.assertEqual(created.status_code, 200)
+            token, share_id = created.json()["token"], created.json()["id"]
+            self.client.post("/api/auth/logout")
+            self.assertEqual(self.client.get("/api/documents").status_code, 401)
+            shared = self.client.get(f"/api/public-shares/{token}")
+            self.assertEqual(shared.json()["resource"]["documents"][0]["filename"], "report.pdf")
+            self.assertEqual(self.client.post(f"/api/public-shares/{token}/comments", json={"author": "Reader", "body": "Looks good"}).status_code, 403)
+            self.assertEqual(self.client.delete(f"/api/shares/{share_id}").status_code, 401)
+            self.client.post("/api/auth/login", json={"key": key})
+            self.assertEqual(self.client.delete(f"/api/shares/{share_id}").status_code, 200)
+            self.assertEqual(self.client.get(f"/api/public-shares/{token}").status_code, 404)
+
+    def test_comment_share_allows_comments_and_expires(self):
+        database.create_conversation("conversation-1", "Review")
+        key = "owner-secret-longer-than-thirty-two-characters"
+        with patch.dict(os.environ, {"RAG_OWNER_API_KEY": key}):
+            self.client.post("/api/auth/login", json={"key": key})
+            result = self.client.post("/api/shares", json={"resource_type": "conversation", "resource_id": "conversation-1", "permission": "comment"})
+            token = result.json()["token"]
+            self.client.post("/api/auth/logout")
+            response = self.client.post(f"/api/public-shares/{token}/comments", json={"author": "Reader", "body": "Please verify page 2"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.client.get(f"/api/public-shares/{token}").json()["comments"][0]["body"], "Please verify page 2")
+            with database.get_connection() as conn:
+                conn.execute("UPDATE shares SET expires_at = '2000-01-01T00:00:00+00:00'")
+            self.assertEqual(self.client.get(f"/api/public-shares/{token}").status_code, 404)
 
     def test_ingestion_rejects_wrong_mime_signature_and_oversized_files(self):
         wrong_mime = self.client.post(

@@ -5,6 +5,9 @@ import sqlite3
 import json
 import uuid
 import logging
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 DB_PATH = os.getenv("RAG_DATABASE_PATH", "rag_history.db")
@@ -124,6 +127,17 @@ def init_db() -> None:
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_source_set_documents_doc ON source_set_documents (document_id)")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS shares (
+            id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE,
+            resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+            permission TEXT NOT NULL, expires_at TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS share_comments (
+            id TEXT PRIMARY KEY, share_id TEXT NOT NULL, author TEXT NOT NULL,
+            body TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_share_comments_share ON share_comments (share_id)")
         conn.commit()
     logger.info("SQLite database initialized successfully.")
 
@@ -456,4 +470,56 @@ def delete_source_set(source_set_id: str) -> bool:
     with get_connection() as conn:
         cursor = conn.execute("DELETE FROM source_sets WHERE id = ?", (source_set_id,))
         conn.execute("DELETE FROM source_set_documents WHERE source_set_id = ?", (source_set_id,))
+        conn.execute("DELETE FROM share_comments WHERE share_id IN (SELECT id FROM shares WHERE resource_type = 'collection' AND resource_id = ?)", (source_set_id,))
+        conn.execute("DELETE FROM shares WHERE resource_type = 'collection' AND resource_id = ?", (source_set_id,))
         return cursor.rowcount == 1
+
+
+def create_share(resource_type: str, resource_id: str, permission: str, days: int) -> Dict[str, Any]:
+    token = secrets.token_urlsafe(32)
+    share_id = str(uuid.uuid4())
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+    with get_connection() as conn:
+        conn.execute("INSERT INTO shares (id, token_hash, resource_type, resource_id, permission, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                     (share_id, hashlib.sha256(token.encode()).hexdigest(), resource_type, resource_id, permission, expires_at))
+    return {"id": share_id, "token": token, "resource_type": resource_type, "resource_id": resource_id,
+            "permission": permission, "expires_at": expires_at}
+
+
+def list_shares() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute("SELECT id, resource_type, resource_id, permission, expires_at, created_at FROM shares ORDER BY created_at DESC")]
+
+
+def get_share_by_token(token: str) -> Optional[Dict[str, Any]]:
+    if len(token) > 100:
+        return None
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT id, resource_type, resource_id, permission, expires_at FROM shares WHERE token_hash = ?",
+                           (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+    if not row or datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+        return None
+    return dict(row)
+
+
+def revoke_share(share_id: str) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM shares WHERE id = ?", (share_id,))
+        conn.execute("DELETE FROM share_comments WHERE share_id = ?", (share_id,))
+        return cursor.rowcount == 1
+
+
+def add_share_comment(share_id: str, author: str, body: str) -> Dict[str, Any]:
+    comment_id = str(uuid.uuid4())
+    with get_connection() as conn:
+        conn.execute("INSERT INTO share_comments (id, share_id, author, body) VALUES (?, ?, ?, ?)",
+                     (comment_id, share_id, author, body))
+    return {"id": comment_id, "author": author, "body": body}
+
+
+def list_share_comments(share_id: str) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute("SELECT id, author, body, created_at FROM share_comments WHERE share_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 100", (share_id,))]

@@ -10,13 +10,16 @@ import socket
 import ssl
 import http.client
 import io
+import hmac
+import hashlib
+import time
 from urllib.parse import urlsplit
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, Response
+from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pypdf import PdfReader
@@ -62,6 +65,12 @@ from app.database import (
     set_document_extraction,
     set_extraction_review,
     set_source_format,
+    create_share,
+    list_shares,
+    get_share_by_token,
+    revoke_share,
+    add_share_comment,
+    list_share_comments,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -95,6 +104,40 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _owner_key() -> str:
+    return os.getenv("RAG_OWNER_API_KEY", "")
+
+
+def _owner_session_valid(cookie: Optional[str]) -> bool:
+    key = _owner_key()
+    if not key or not cookie:
+        return False
+    try:
+        issued, signature = cookie.split(".", 1)
+        issued_at = int(issued)
+        if not 0 <= time.time() - issued_at < 24 * 60 * 60:
+            return False
+        expected = hmac.new(key.encode(), issued.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(signature, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+@app.middleware("http")
+async def owner_access(request: Request, call_next):
+    """Keep private APIs behind an owner session when sharing is enabled."""
+    path = request.url.path
+    public = path == "/" or path in {"/api/auth/status", "/api/auth/login"} or path.startswith("/api/public-shares/")
+    if request.method == "OPTIONS" or not _owner_key() or public or _owner_session_valid(request.cookies.get("rag_owner")):
+        return await call_next(request)
+    response = JSONResponse(status_code=401, content={"detail": "Owner session required."})
+    origin = request.headers.get("origin")
+    if origin in cors_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 UPLOAD_DIR = os.getenv("RAG_UPLOAD_DIR", "docs")
 MAX_UPLOAD_BYTES = int(os.getenv("RAG_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
@@ -221,6 +264,22 @@ class OutputRequest(BaseModel):
         return ids
 
 
+class OwnerLoginRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=512)
+
+
+class ShareRequest(BaseModel):
+    resource_type: Literal["collection", "conversation"]
+    resource_id: str = Field(min_length=1, max_length=100)
+    permission: Literal["view", "comment"] = "view"
+    expires_in_days: int = Field(default=7, ge=1, le=30)
+
+
+class ShareCommentRequest(BaseModel):
+    author: str = Field(min_length=1, max_length=80)
+    body: str = Field(min_length=1, max_length=1000)
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -228,6 +287,94 @@ class OutputRequest(BaseModel):
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "Multi-Modal RAG API is running"}
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    required = bool(_owner_key())
+    return {"required": required, "authenticated": not required or _owner_session_valid(request.cookies.get("rag_owner"))}
+
+
+@app.post("/api/auth/login")
+def owner_login(request: Request, credentials: OwnerLoginRequest):
+    key = _owner_key()
+    if not key or not hmac.compare_digest(credentials.key, key):
+        raise HTTPException(status_code=401, detail="Invalid owner key.")
+    issued = str(int(time.time()))
+    signature = hmac.new(key.encode(), issued.encode(), hashlib.sha256).hexdigest()
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie("rag_owner", f"{issued}.{signature}", httponly=True, samesite="lax",
+                        secure=request.url.scheme == "https", max_age=24 * 60 * 60, path="/api")
+    return response
+
+
+@app.post("/api/auth/logout")
+def owner_logout():
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie("rag_owner", path="/api")
+    return response
+
+
+@app.get("/api/shares")
+def get_shares():
+    return list_shares()
+
+
+@app.post("/api/shares")
+def save_share(request: ShareRequest):
+    if len(_owner_key()) < 32:
+        raise HTTPException(status_code=503, detail="Set a strong RAG_OWNER_API_KEY (at least 32 characters) before sharing.")
+    if request.resource_type == "collection":
+        exists = any(item["id"] == request.resource_id for item in list_source_sets())
+    else:
+        exists = any(item["id"] == request.resource_id for item in get_all_conversations())
+    if not exists:
+        raise HTTPException(status_code=404, detail="Share target not found.")
+    return create_share(request.resource_type, request.resource_id, request.permission, request.expires_in_days)
+
+
+@app.delete("/api/shares/{share_id}")
+def remove_share(share_id: str):
+    if not revoke_share(share_id):
+        raise HTTPException(status_code=404, detail="Share not found.")
+    return {"status": "revoked", "id": share_id}
+
+
+def _public_share(token: str) -> dict:
+    share = get_share_by_token(token)
+    if not share:
+        raise HTTPException(status_code=404, detail="Share link expired or revoked.")
+    return share
+
+
+@app.get("/api/public-shares/{token}")
+def get_public_share(token: str):
+    share = _public_share(token)
+    if share["resource_type"] == "collection":
+        collection = next((item for item in list_source_sets() if item["id"] == share["resource_id"]), None)
+        if not collection:
+            raise HTTPException(status_code=404, detail="Shared collection no longer exists.")
+        documents = [get_document(doc_id) for doc_id in collection["document_ids"]]
+        resource = {"id": collection["id"], "name": collection["name"],
+                    "documents": [{"id": doc["id"], "filename": doc["filename"], "tags": doc["tags"]}
+                                  for doc in documents if doc and doc["status"] == "ready"],
+                    "summary": summarize_evidence(collection["document_ids"])}
+    else:
+        conversation = next((item for item in get_all_conversations() if item["id"] == share["resource_id"]), None)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Shared conversation no longer exists.")
+        resource = conversation
+    return {"resource_type": share["resource_type"], "permission": share["permission"],
+            "expires_at": share["expires_at"], "resource": resource,
+            "comments": list_share_comments(share["id"])}
+
+
+@app.post("/api/public-shares/{token}/comments")
+def comment_on_share(token: str, request: ShareCommentRequest):
+    share = _public_share(token)
+    if share["permission"] != "comment":
+        raise HTTPException(status_code=403, detail="This link is view-only.")
+    return add_share_comment(share["id"], request.author.strip(), request.body.strip())
 
 
 # ---------------------------------------------------------------------------
