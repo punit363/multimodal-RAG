@@ -242,6 +242,24 @@ def summarize_evidence(document_ids: List[str], section_title: Optional[str] = N
     return {"kind": "extractive", "items": items[:12], "total_matching_chunks": len(items)}
 
 
+def indexed_evidence(document_ids: List[str]) -> List[Dict[str, str]]:
+    """Read a bounded set of original, citable text from selected indexed sources."""
+    evidence = []
+    for document_id in document_ids:
+        results = vectorstore._collection.get(
+            where={"document_id": document_id}, include=["documents", "metadatas"], limit=100
+        )
+        for text, metadata in zip(results.get("documents") or [], results.get("metadatas") or []):
+            if not metadata or metadata.get("representation_type") not in {"text", "table"}:
+                continue
+            chunk_id = metadata.get("chunk_id")
+            if text and chunk_id:
+                evidence.append({"text": text[:3000], "document_id": document_id,
+                                 "filename": metadata.get("filename", ""), "chunk_id": chunk_id,
+                                 "section_title": metadata.get("section_title", "")})
+    return evidence
+
+
 def process_and_store_documents(pdf_path: str) -> None:
     """Convenience wrapper: partition -> chunk -> summarise -> store."""
     filename = os.path.basename(pdf_path)

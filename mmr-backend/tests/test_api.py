@@ -23,6 +23,7 @@ fake_rag_pipeline.answer_query = lambda query, k=3, sources=None: {"answer": "st
 fake_rag_pipeline.answer_query_stream = lambda query, k=3, sources=None: iter(())
 fake_rag_pipeline.delete_document_vectors = lambda filename: True
 fake_rag_pipeline.summarize_evidence = lambda ids, section_title=None: {"kind": "extractive", "items": [], "total_matching_chunks": 0}
+fake_rag_pipeline.indexed_evidence = lambda ids: []
 sys.modules["app.rag_pipeline"] = fake_rag_pipeline
 
 from app import main  # noqa: E402
@@ -361,6 +362,18 @@ class ApiTests(unittest.TestCase):
         document = self.client.get("/api/documents").json()[0]
         self.assertEqual(document["source_format"], "html")
         self.assertIn("Launch target", document["extraction"]["preview"][0])
+
+    def test_structured_outputs_require_ready_sources_and_export_cited_report(self):
+        database.add_document("report.pdf", doc_id="report", storage_name="report.pdf")
+        evidence = [{"text": "Revenue reached $42 million on 2026-02-01.", "document_id": "report",
+                     "filename": "report.pdf", "chunk_id": "report::1", "section_title": "Results"}]
+        with patch.object(main, "indexed_evidence", return_value=evidence):
+            result = self.client.post("/api/outputs", json={"kind": "timeline", "document_ids": ["report"]})
+            self.assertEqual(result.json()["items"][0]["chunk_id"], "report::1")
+            exported = self.client.post("/api/outputs/report.md", json={"kind": "report", "document_ids": ["report"]})
+        self.assertIn("[[source:report::1]]", exported.text)
+        self.assertIn("attachment", exported.headers["content-disposition"])
+        self.assertEqual(self.client.post("/api/outputs", json={"kind": "report", "document_ids": ["missing"]}).status_code, 422)
 
     def test_ingestion_rejects_wrong_mime_signature_and_oversized_files(self):
         wrong_mime = self.client.post(

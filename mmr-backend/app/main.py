@@ -16,7 +16,7 @@ from typing import List, Literal, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pypdf import PdfReader
@@ -30,7 +30,9 @@ from app.rag_pipeline import (
     answer_query_stream,
     delete_document_vectors,
     summarize_evidence,
+    indexed_evidence,
 )
+from app.structured_outputs import build_structured_output
 from app.retrieval_filters import RetrievalFilters
 from app.document_extract import extract_sections
 from app.database import (
@@ -202,6 +204,18 @@ class ExtractionReviewRequest(BaseModel):
 
 class WebPageRequest(BaseModel):
     url: str = Field(min_length=10, max_length=2048)
+
+
+class OutputRequest(BaseModel):
+    kind: Literal["extraction", "timeline", "matrix", "report"]
+    document_ids: List[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("document_ids")
+    @classmethod
+    def distinct_ids(cls, ids: List[str]) -> List[str]:
+        if len(ids) != len(set(ids)) or any(not item.strip() for item in ids):
+            raise ValueError("Select distinct document IDs.")
+        return ids
 
 
 # ---------------------------------------------------------------------------
@@ -778,6 +792,26 @@ def get_summary(scope: Literal["document", "section", "collection"], document_id
             raise HTTPException(status_code=422, detail="A section title is required.")
         ids = [document["id"]]
     return {"scope": scope, "summary": summarize_evidence(ids, section_title if scope == "section" else None)}
+
+
+def _validated_output(request: OutputRequest) -> dict:
+    if any(not (document := get_document(doc_id)) or document["status"] != "ready" for doc_id in request.document_ids):
+        raise HTTPException(status_code=422, detail="Outputs require registered, ready documents.")
+    return build_structured_output(request.kind, indexed_evidence(request.document_ids))
+
+
+@app.post("/api/outputs")
+def create_output(request: OutputRequest):
+    return _validated_output(request)
+
+
+@app.post("/api/outputs/report.md")
+def export_output_report(request: OutputRequest):
+    if request.kind != "report":
+        raise HTTPException(status_code=422, detail="Only reports can be exported as Markdown.")
+    result = _validated_output(request)
+    return Response(content=result["markdown"], media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="source-report.md"'})
 
 
 @app.delete("/api/documents/{doc_id}")
