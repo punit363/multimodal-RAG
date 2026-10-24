@@ -19,6 +19,16 @@ class DatabaseTests(unittest.TestCase):
         self._database_path_patch.stop()
         self._temporary_directory.cleanup()
 
+    def test_schema_version_is_idempotent_and_rejects_future_database(self):
+        with database.get_connection() as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], database.SCHEMA_VERSION)
+        database.init_db()
+        with database.get_connection() as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], database.SCHEMA_VERSION)
+            conn.execute(f"PRAGMA user_version = {database.SCHEMA_VERSION + 1}")
+        with self.assertRaisesRegex(RuntimeError, "newer than this application supports"):
+            database.init_db()
+
     def test_conversation_messages_and_sources_round_trip(self):
         database.create_conversation("conversation-1", "Test conversation")
         database.save_message(

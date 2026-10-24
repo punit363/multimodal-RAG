@@ -39,7 +39,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # Set OPENAI_API_KEY in .env
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --no-access-log
 ```
 
 The API health endpoint is available at `http://localhost:8000/` and interactive API documentation at `http://localhost:8000/docs`. Set `RAG_OCR_LANGUAGES` to a comma-separated subset of `en,hi,es,fr` if only some OCR packs are installed locally.

@@ -92,6 +92,19 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(self.client.get("/health/ready").status_code, 503)
             self.assertEqual(self.client.get("/health/live").json(), {"status": "alive"})
 
+    def test_access_log_correlates_without_recording_share_token_or_query(self):
+        secret = "sensitive-share-token"
+        with self.assertLogs("rag_access", level="INFO") as captured:
+            response = self.client.get(f"/api/public-shares/{secret}?query=private-words")
+        request_id = response.headers["X-Request-ID"]
+        record = next(json.loads(line.split("INFO:rag_access:", 1)[1]) for line in captured.output
+                      if '"event":"http_request"' in line)
+        self.assertEqual(record["request_id"], request_id)
+        self.assertEqual(record["route"], "/api/public-shares/{token}")
+        self.assertEqual(record["status"], response.status_code)
+        self.assertNotIn(secret, str(record))
+        self.assertNotIn("private-words", str(record))
+
     def test_chat_stream_forwards_selected_sources_and_persists_messages(self):
         captured = {}
         source = {"filename": "report.pdf", "chunk_id": 1}

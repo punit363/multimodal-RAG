@@ -38,6 +38,7 @@ from app.rag_pipeline import (
 from app.structured_outputs import build_structured_output
 from app.language import response_language
 from app.operations import readiness_checks
+from app.request_log import log_request
 from app.retrieval_filters import RetrievalFilters
 from app.document_extract import extract_sections
 from app.database import (
@@ -139,6 +140,10 @@ async def owner_access(request: Request, call_next):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
+
+
+# Registered after owner_access so rejected requests also get a correlation ID.
+app.middleware("http")(log_request)
 
 UPLOAD_DIR = os.getenv("RAG_UPLOAD_DIR", "docs")
 VECTOR_DIR = os.getenv("RAG_VECTOR_DIR", "db/chroma_db")

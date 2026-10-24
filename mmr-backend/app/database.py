@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 DB_PATH = os.getenv("RAG_DATABASE_PATH", "rag_history.db")
+SCHEMA_VERSION = 1
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag_db")
@@ -27,6 +28,11 @@ def init_db() -> None:
     """Create the conversations and messages tables if they don't exist."""
     with get_connection() as conn:
         cursor = conn.cursor()
+        version = cursor.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"SQLite schema version {version} is newer than this application supports ({SCHEMA_VERSION})."
+            )
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
@@ -138,6 +144,7 @@ def init_db() -> None:
             body TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_share_comments_share ON share_comments (share_id)")
+        cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     logger.info("SQLite database initialized successfully.")
 
