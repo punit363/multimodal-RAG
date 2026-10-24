@@ -375,6 +375,18 @@ class ApiTests(unittest.TestCase):
         self.assertIn("attachment", exported.headers["content-disposition"])
         self.assertEqual(self.client.post("/api/outputs", json={"kind": "report", "document_ids": ["missing"]}).status_code, 422)
 
+    def test_chat_language_validation_and_forwarding(self):
+        captured = {}
+        def answer(query, k=3, sources=None, **options):
+            captured.update(options)
+            return {"answer": "respuesta", "sources": []}
+        with patch.object(main, "answer_query", side_effect=answer):
+            response = self.client.post("/api/chat", json={"query": "Revenue?", "language": "es"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["language"], "es")
+        self.assertEqual(self.client.post("/api/chat", json={"query": "收入是多少？"}).status_code, 422)
+        self.assertEqual(self.client.post("/api/chat", json={"query": "Revenue?", "language": "xx"}).status_code, 422)
+
     def test_ingestion_rejects_wrong_mime_signature_and_oversized_files(self):
         wrong_mime = self.client.post(
             "/api/ingest-stream",

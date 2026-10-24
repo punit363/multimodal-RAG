@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
 from app.structured_index import StructuredChunk
+from app.language import ocr_languages
 
 MAX_UNCOMPRESSED_BYTES = 60 * 1024 * 1024
 MAX_ZIP_ENTRIES = 2000
@@ -126,7 +127,7 @@ def extract_sections(path: str, source_format: str) -> list[StructuredChunk]:
             if image.width * image.height > 40_000_000:
                 raise ValueError("Image exceeds the 40 megapixel OCR limit.")
             image.verify()
-        result = subprocess.run(["tesseract", path, "stdout"], capture_output=True, text=True, timeout=60, check=False)
+        result = subprocess.run(["tesseract", path, "stdout", "-l", "+".join(ocr_languages())], capture_output=True, text=True, timeout=60, check=False)
         if result.returncode:
             raise ValueError("Image OCR failed; check that Tesseract is installed.")
         sections = [("Image OCR", result.stdout)]

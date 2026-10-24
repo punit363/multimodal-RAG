@@ -33,6 +33,7 @@ from app.rag_pipeline import (
     indexed_evidence,
 )
 from app.structured_outputs import build_structured_output
+from app.language import response_language
 from app.retrieval_filters import RetrievalFilters
 from app.document_extract import extract_sections
 from app.database import (
@@ -132,6 +133,7 @@ class QueryRequest(ComparisonRequest):
     top_k: int = Field(default=3, ge=1, le=20)
     filters: Optional[RetrievalFilters] = None
     history: List[HistoryMessage] = Field(default_factory=list, max_length=6)
+    language: Literal["auto", "en", "hi", "es", "fr"] = "auto"
 
 
 class StreamQueryRequest(ComparisonRequest):
@@ -142,6 +144,7 @@ class StreamQueryRequest(ComparisonRequest):
     top_k: int = Field(default=3, ge=1, le=20)
     # Immutable document ids selected as sources. None/empty = search everything.
     filters: Optional[RetrievalFilters] = None
+    language: Literal["auto", "en", "hi", "es", "fr"] = "auto"
 
 
 class CreateConvRequest(BaseModel):
@@ -522,11 +525,17 @@ def chat_query(request: QueryRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query string cannot be empty.")
     try:
+        response_language(request.query, request.language)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
         options = {"filters": request.filters} if request.filters and request.filters.active() else {}
         if request.mode == "compare":
             options["mode"] = "compare"
         if request.history:
             options["history"] = [message.model_dump() for message in request.history]
+        if request.language != "auto":
+            options["language"] = request.language
         return answer_query(request.query, k=request.top_k, sources=request.sources or None, **options)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query execution failed: {e}")
@@ -541,6 +550,10 @@ def chat_query_stream(request: StreamQueryRequest):
     """
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query string cannot be empty.")
+    try:
+        response_language(request.query, request.language)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # 1. Make sure the conversation exists
     create_conversation(request.conversation_id, request.query[:25])
@@ -573,6 +586,8 @@ def chat_query_stream(request: StreamQueryRequest):
                 options["mode"] = "compare"
             if history:
                 options["history"] = history
+            if request.language != "auto":
+                options["language"] = request.language
             for sse_line in answer_query_stream(
                 request.query, k=request.top_k, sources=request.sources or None, **options
             ):

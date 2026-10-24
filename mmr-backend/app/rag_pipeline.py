@@ -24,6 +24,7 @@ from app.retrieval_filters import RetrievalFilters, eligible_chunk_ids
 from app.ranking import cosine_similarity, keyword_rank, reciprocal_rank_fusion, rerank_diverse, tokenize
 from app.query_rewrite import rewrite_followup_query
 from app.structured_index import structured_chunks, table_search_text
+from app.language import ocr_languages, language_instruction, insufficient_evidence_message
 
 load_dotenv()
 
@@ -83,6 +84,7 @@ def partition_documents(file_path: str):
         infer_table_structure=True,
         extract_image_block_types=["Image"],
         extract_image_block_to_payload=True,
+        languages=ocr_languages(),
     )
 
 
@@ -511,18 +513,19 @@ def answer_query(
     query: str, k: int = 3, sources: Optional[List[str]] = None,
     filters: Optional[RetrievalFilters] = None,
     history: Optional[List[Dict[str, str]]] = None,
-    mode: str = "answer",
+    mode: str = "answer", language: str = "auto",
 ) -> Dict[str, Any]:
     """Non-streaming answer."""
+    instruction = language_instruction(query, language)
     docs = _answer_evidence(query, k, sources, filters, history, mode)
     if not docs:
-        return {"answer": INSUFFICIENT_EVIDENCE_ANSWER, "sources": [], "insufficient_evidence": True}
+        return {"answer": insufficient_evidence_message(query, language), "sources": [], "insufficient_evidence": True}
     context, image_parts, formatted_sources = _build_context(docs)
 
     prompt_text = (
         f"Based on the following documents, please answer this question: {query}\n\n"
         f"CONTENT TO ANALYZE:\n{context}\n"
-        f"{_answer_instruction(mode)}\nANSWER:"
+        f"{_answer_instruction(mode)}\n{instruction}\nANSWER:"
     )
     message_content = [{"type": "text", "text": prompt_text}, *image_parts]
     response = llm.invoke([HumanMessage(content=message_content)])
@@ -540,16 +543,18 @@ def answer_query_stream(
     filters: Optional[RetrievalFilters] = None,
     history: Optional[List[Dict[str, str]]] = None,
     mode: str = "answer",
+    language: str = "auto",
 ) -> Generator[str, None, None]:
     """Stream SSE events: one `sources` event, many `token` events, then `done`.
 
     If `sources` (a list of filenames) is given, retrieval is restricted to them.
     """
     try:
+        instruction = language_instruction(query, language)
         docs = _answer_evidence(query, k, sources, filters, history, mode)
         if not docs:
             yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
-            yield f"data: {json.dumps({'type': 'token', 'token': INSUFFICIENT_EVIDENCE_ANSWER})}\n\n"
+            yield f"data: {json.dumps({'type': 'token', 'token': insufficient_evidence_message(query, language)}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'insufficient_evidence': True})}\n\n"
             return
         context, image_parts, formatted_sources = _build_context(docs)
@@ -560,6 +565,7 @@ def answer_query_stream(
             "You are an expert AI assistant performing RAG analysis over multi-modal context.\n"
             "Answer the user query based ONLY on the provided contextual chunks.\n"
             f"{_answer_instruction(mode)}\n"
+            f"{instruction}\n"
             "If the context does not contain the answer, say so.\n\n"
             f"Context:\n{context or 'No matching document context found.'}"
         )

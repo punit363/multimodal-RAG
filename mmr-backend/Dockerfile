@@ -11,6 +11,9 @@ RUN apt-get update \
         libmagic1 \
         poppler-utils \
         tesseract-ocr \
+        tesseract-ocr-hin \
+        tesseract-ocr-spa \
+        tesseract-ocr-fra \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
