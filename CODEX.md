@@ -186,12 +186,14 @@ After each priority, update the Phase 4 Notion page with implemented features, c
 
 ### Low priority — operational foundation
 
-- [ ] Add separate liveness and dependency-aware readiness probes; use readiness for the backend container health check.
-- [ ] Emit structured, request-correlated API access logs without recording query text, share tokens, credentials, or document content.
-- [ ] Version the existing SQLite schema and fail clearly if the application opens a newer, unsupported schema; test upgrade from legacy tables and repeat startup.
-- [ ] Document probe behavior, logging fields, schema migration checks, and a local incident triage runbook.
+- [x] Add separate liveness and dependency-aware readiness probes; use readiness for the backend container health check.
+- [x] Emit structured, request-correlated API access logs without recording query text, share tokens, credentials, or document content.
+- [x] Version the existing SQLite schema and fail clearly if the application opens a newer, unsupported schema; test upgrade from legacy tables and repeat startup.
+- [x] Document probe behavior, logging fields, schema migration checks, and a local incident triage runbook.
 
 **Acceptance:** A missing/unusable database or upload path makes readiness fail while liveness remains available. Requests return a correlation ID and logs omit sensitive path/query/body data. Existing databases migrate idempotently; an unsupported future schema does not start. CI runs focused tests.
+
+**Low-priority implementation:** `/health/live` reports process liveness; `/health/ready` checks the versioned SQLite document registry and writable upload/vector directories, and drives the backend container health check. API responses include `X-Request-ID`; structured request logs record route templates, status, and elapsed time without URL values or bodies. The deployment command disables Uvicorn's raw URL access log. SQLite startup migrates existing tables to schema version 1, is repeatable, and rejects databases from a newer application. [The operations runbook](docs/OPERATIONS.md) describes checks and local triage. This is a local operational foundation, not production monitoring or complete disaster recovery.
 
 ### Medium priority — operational controls and recovery
 

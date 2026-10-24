@@ -90,6 +90,8 @@ class ApiTests(unittest.TestCase):
                 self.assertFalse((root / "missing.db").exists())
             vector_dir.rmdir()
             self.assertEqual(self.client.get("/health/ready").status_code, 503)
+            with patch.object(main, "UPLOAD_DIR", str(root / "missing-uploads")):
+                self.assertEqual(self.client.get("/health/ready").json()["checks"]["uploads"], "failed")
             self.assertEqual(self.client.get("/health/live").json(), {"status": "alive"})
 
     def test_access_log_correlates_without_recording_share_token_or_query(self):

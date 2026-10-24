@@ -155,6 +155,9 @@ class DatabaseTests(unittest.TestCase):
         database.init_db()
         duplicate = database.add_document("report.pdf")
 
+        with database.get_connection() as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], database.SCHEMA_VERSION)
+
         documents = database.list_documents()
         self.assertEqual(len(documents), 2)
         self.assertNotEqual(duplicate["id"], "legacy-id")

@@ -42,7 +42,7 @@ cp .env.example .env
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --no-access-log
 ```
 
-The API health endpoint is available at `http://localhost:8000/` and interactive API documentation at `http://localhost:8000/docs`. Set `RAG_OCR_LANGUAGES` to a comma-separated subset of `en,hi,es,fr` if only some OCR packs are installed locally.
+The API exposes liveness at `http://localhost:8000/health/live`, dependency readiness at `http://localhost:8000/health/ready`, and interactive documentation at `http://localhost:8000/docs`. See the [operations runbook](docs/OPERATIONS.md) for the checks, request logs, and local incident steps. Set `RAG_OCR_LANGUAGES` to a comma-separated subset of `en,hi,es,fr` if only some OCR packs are installed locally.
 
 ### Frontend
 
@@ -96,7 +96,7 @@ npm run build
 npm run test:e2e
 ```
 
-The completed Phase 1 and Phase 2 records and the prioritized Phase 3 roadmap are tracked in [CODEX.md](CODEX.md). The [Phase 3 engineering log](https://app.notion.com/p/3fa7cd5908fc81eda42bfc938e72f64c) records implementation evidence after each priority. The [evaluation guide](mmr-backend/evaluation/README.md) explains how to capture a fixed Phase 2 baseline before tuning retrieval.
+The phased roadmap and priority status are tracked in [CODEX.md](CODEX.md). The [Phase 5 engineering log](https://app.notion.com/p/3fa7cd5908fc81baadaad13ceaa29bd2) records production-readiness work after each priority. The [evaluation guide](mmr-backend/evaluation/README.md) explains how to capture a fixed answer-quality baseline before tuning retrieval.
 
 ## Current limitations
 

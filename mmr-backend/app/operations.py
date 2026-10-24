@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 from app import database
@@ -25,9 +26,11 @@ def readiness_checks(upload_dir: str, vector_dir: str) -> dict[str, str]:
     checks = {"database": "failed", "uploads": "failed", "vectors": "failed"}
     if os.path.isfile(database.DB_PATH):
         try:
-            with database.get_connection() as conn:
+            with closing(database.get_connection()) as conn:
                 conn.execute("SELECT id FROM documents LIMIT 1").fetchone()
-            checks["database"] = "ok"
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version == database.SCHEMA_VERSION:
+                checks["database"] = "ok"
         except Exception:
             pass
     if _writable_directory(upload_dir):
