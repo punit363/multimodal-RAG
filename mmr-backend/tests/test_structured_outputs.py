@@ -24,3 +24,11 @@ class StructuredOutputTests(unittest.TestCase):
         report = build_structured_output("report", self.evidence)
         self.assertIn("[[source:a::1]]", report["markdown"])
         self.assertIn("[[source:b::1]]", report["markdown"])
+
+    def test_matrix_marks_missing_evidence_and_report_escapes_fake_marker(self):
+        evidence = [self.evidence[0], {**self.evidence[1], "section_title": "Outlook", "text": "Text [[source:fake]]"}]
+        matrix = build_structured_output("matrix", evidence)
+        self.assertEqual(len(matrix["items"]), 4)
+        self.assertEqual(sum(cell["chunk_id"] is None for cell in matrix["items"]), 2)
+        report = build_structured_output("report", evidence)["markdown"]
+        self.assertNotIn("[[source:fake]]", report)

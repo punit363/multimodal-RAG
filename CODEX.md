@@ -141,7 +141,7 @@ After each priority, update the Phase 3 Notion page with implemented features, c
 
 ## Phase 4 — Product Expansion
 
-**Status:** In progress — Low and Medium feature implementation complete October 23, 2026; High priority remains planned.
+**Status:** Low, Medium, and High feature implementation complete October 24, 2026. Runtime multilingual OCR validation remains open because Docker was unavailable; representative language quality has not been measured.
 
 **Objective:** Turn the PDF demo into a broader document-intelligence workspace. The [Phase 4 engineering log](https://app.notion.com/p/3fa7cd5908fc81d1b42bfa414f65d954) records progress after each priority. Execute Low → Medium → High with reviewable commits within each priority.
 
@@ -166,11 +166,13 @@ After each priority, update the Phase 3 Notion page with implemented features, c
 
 ### High priority — advanced outputs and collaboration
 
-- [ ] Add structured extraction, timelines, comparison matrices, and exportable reports with source citations.
-- [ ] Add multilingual ingestion and question answering with language-aware validation.
-- [ ] Add shared collections, comments, and shareable conversations with explicit access controls.
+- [x] Add structured extraction, timelines, comparison matrices, and exportable reports with source citations.
+- [x] Add multilingual ingestion and question answering with language-aware validation.
+- [x] Add shared collections, comments, and shareable conversations with explicit access controls.
 
-**Acceptance:** Structured outputs and collaboration have end-to-end coverage; cited claims remain traceable to source evidence, and access controls prevent cross-user leakage.
+**Acceptance:** Structured outputs and collaboration have end-to-end coverage; cited claims remain traceable to source evidence, and private APIs require an owner session when sharing is enabled. A share token grants only its selected collection or conversation and its view/comment permission. This is a single-owner workspace, not separate user accounts. Docker OCR runtime verification and representative multilingual answer quality remain open.
+
+**High-priority implementation:** Structured extraction, timeline, comparison matrix, and Markdown report endpoints use bounded indexed evidence with source chunk IDs; matrix cells with no indexed evidence say unavailable. The chat UI creates these outputs and downloads reports. English, Hindi, Spanish, and French OCR packs are declared for the backend image; upload extraction uses configured OCR languages, and chat accepts a validated response language. Auto mode detects Hindi script and defaults other supported text to English. A configured owner key protects private APIs with a signed 24-hour cookie. The owner can create and revoke expiring, token-hashed links for collections or conversations with view or comment permission; a public share page shows scoped content and comments. Sharing is disabled without a strong owner key. Backend, frontend, and browser tests cover source identity, language validation, session access, share scope, permissions, expiry, revocation, and comments. The Next.js build reports an upstream security advisory. Docker was stopped during validation, so the multilingual OCR image was not rebuilt. Representative language and retrieval quality remain unmeasured.
 
 ### Execution record for every priority
 

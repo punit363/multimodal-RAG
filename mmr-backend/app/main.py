@@ -279,6 +279,14 @@ class ShareCommentRequest(BaseModel):
     author: str = Field(min_length=1, max_length=80)
     body: str = Field(min_length=1, max_length=1000)
 
+    @field_validator("author", "body")
+    @classmethod
+    def nonempty_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Text cannot be empty.")
+        return value
+
 
 # ---------------------------------------------------------------------------
 # Health
@@ -374,7 +382,10 @@ def comment_on_share(token: str, request: ShareCommentRequest):
     share = _public_share(token)
     if share["permission"] != "comment":
         raise HTTPException(status_code=403, detail="This link is view-only.")
-    return add_share_comment(share["id"], request.author.strip(), request.body.strip())
+    try:
+        return add_share_comment(share["id"], request.author, request.body)
+    except ValueError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

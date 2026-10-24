@@ -6,13 +6,13 @@ MultiModal RAG is a document-question-answering application for PDFs, Office fil
 
 ```text
 Browser (Next.js)
-  |-- upload PDF / stream progress ------> FastAPI
+  |-- upload sources / stream progress --> FastAPI
   |-- ask question / stream answer ------> FastAPI
   |<-- answer + retrieved source chunks --|
                                                |-- Unstructured: PDF parsing
                                                |-- OpenAI: summaries, embeddings, answers
                                                |-- Chroma: vector index
-                                               `-- SQLite: documents and conversations
+                                               `-- SQLite: documents, conversations, shares
 ```
 
 The root repository contains two application services:
@@ -25,7 +25,7 @@ The root repository contains two application services:
 - Node.js 20 or newer
 - Python 3.11
 - An OpenAI API key
-- PDF extraction system packages required by Unstructured
+- Tesseract with English, Hindi, Spanish, and French language packs for multilingual OCR (included in the Docker backend image)
 - Docker Desktop, if using the container setup
 
 ## Run locally
@@ -42,7 +42,7 @@ cp .env.example .env
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The API health endpoint is available at `http://localhost:8000/` and interactive API documentation at `http://localhost:8000/docs`.
+The API health endpoint is available at `http://localhost:8000/` and interactive API documentation at `http://localhost:8000/docs`. Set `RAG_OCR_LANGUAGES` to a comma-separated subset of `en,hi,es,fr` if only some OCR packs are installed locally.
 
 ### Frontend
 
@@ -101,7 +101,7 @@ The completed Phase 1 and Phase 2 records and the prioritized Phase 3 roadmap ar
 ## Current limitations
 
 - DOCX, PPTX, XLSX, image, and HTML extraction currently indexes text. PDF extraction also preserves tables and images. Image files require Tesseract OCR; non-PDF source cards download the original file rather than opening the PDF viewer.
-- Authentication and workspace isolation are not implemented.
+- The owner key provides one protected workspace, not separate user accounts or per-user document ownership. Configure it before creating share links; full multi-user identity and governance remain Phase 5 work.
 - Ingestion runs within the API process and is intended for local MVP use.
 - Phase 2 is complete. Existing PDFs need re-ingestion for new element-type, location-status, and content-type metadata. A representative quality evaluation remains open in Phase 3.
 - Source cards show normalized cosine retrieval similarity from 0 to 100%; scores below 50% are marked **Weak match**. This measures question-to-chunk similarity, not answer correctness or model confidence.
@@ -120,7 +120,11 @@ Newly ingested PDFs are chunked within page and section boundaries. Text, table-
 
 Enable **Compare selected documents** in chat after selecting two to four ready PDFs. The backend retrieves evidence from each selected document and requires registered citations from every document in the generated comparison. If one document has no matching evidence, it returns the insufficient-evidence response; if the generated comparison omits a document citation, it shows a verification failure instead. The non-streaming API also accepts `"mode": "compare"` with two to four distinct `sources` IDs. Representative comparison quality has not been measured because that evaluation was deferred.
 
-Phase 4 accepts PDF, DOCX, PPTX, XLSX, PNG/JPEG/WebP/TIFF, and HTML files in the upload queue. Paste a public HTTP(S) URL into **Add page** to ingest its HTML; private network destinations, redirects, and oversized pages are rejected. Files run in sequence, each file has a visible outcome, and failures can be retried independently. In the Knowledge Base sidebar, **Save selection** persists named source sets. Create folders, move documents, and filter by folder. **Summary** shows short extractive excerpts with source chunk IDs for a document, section, or saved set. **Review** shows extraction warnings and previews, and records an accepted or needs-attention decision. Low-text PDF pages and image OCR are flagged for review. These checks are heuristics; verify important facts against the original source. Structured outputs, multilingual support, and sharing remain in the [Phase 4 roadmap](CODEX.md).
+Phase 4 accepts PDF, DOCX, PPTX, XLSX, PNG/JPEG/WebP/TIFF, and HTML files in the upload queue. Paste a public HTTP(S) URL into **Add page** to ingest its HTML; private network destinations, redirects, and oversized pages are rejected. Files run in sequence, each file has a visible outcome, and failures can be retried independently. In the Knowledge Base sidebar, **Save selection** persists named source sets. Create folders, move documents, and filter by folder. **Summary** shows short extractive excerpts with source chunk IDs for a document, section, or saved set. **Review** shows extraction warnings and previews, and records an accepted or needs-attention decision. Low-text PDF pages and image OCR are flagged for review. These checks are heuristics; verify important facts against the original source.
+
+Select ready sources and use **Cited output** to create fact extraction, a timeline, a section comparison matrix, or a Markdown report. Evidence-bearing items carry an indexed chunk ID; missing matrix evidence is labelled unavailable. **Download cited report** saves a Markdown copy. These are extractive views of indexed text, not generated conclusions. Choose an answer language from Auto, English, Hindi, Spanish, or French. Auto detects Hindi script and otherwise uses English; unsupported scripts return a validation error. The Dockerfile installs OCR packs for all four languages; this image has not been rebuilt in the current environment. Language quality on representative documents has not yet been measured.
+
+To enable sharing, set a random `RAG_OWNER_API_KEY` of at least 32 characters in `mmr-backend/.env`, restart the backend, and enter that key in the workspace's **Unlock** dialog. Private API routes then require a 24-hour owner session. Use **Share set** or **Share chat** to create a seven-day view-only or comment-enabled link; copy it when created because the token is stored only as a hash. The owner can revoke links in the workspace. A shared page can show its scoped content and comments without exposing other private API routes. Use the same hostname for the frontend and backend (for example, `localhost` on both ports) so the owner cookie is sent, and use HTTPS before exposing the app outside a trusted local network. If the owner key is unset, the existing local workspace remains open and share creation is disabled. This is a single-owner MVP, not multi-user account management.
 
 ## Runtime safety behavior
 

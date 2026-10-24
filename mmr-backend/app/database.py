@@ -514,6 +514,9 @@ def revoke_share(share_id: str) -> bool:
 def add_share_comment(share_id: str, author: str, body: str) -> Dict[str, Any]:
     comment_id = str(uuid.uuid4())
     with get_connection() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM share_comments WHERE share_id = ?", (share_id,)).fetchone()[0]
+        if count >= 100:
+            raise ValueError("This share has reached its 100-comment limit.")
         conn.execute("INSERT INTO share_comments (id, share_id, author, body) VALUES (?, ?, ?, ?)",
                      (comment_id, share_id, author, body))
     return {"id": comment_id, "author": author, "body": body}
