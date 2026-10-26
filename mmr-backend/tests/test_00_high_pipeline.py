@@ -1,9 +1,41 @@
 import json
+import sys
 import types
 import unittest
 from unittest.mock import patch
 
 from langchain_core.documents import Document
+
+
+def _stub_external_runtime():
+    """Keep pipeline unit tests independent of OCR, paid APIs, and Chroma startup."""
+    modules = {
+        "unstructured": types.ModuleType("unstructured"),
+        "unstructured.partition": types.ModuleType("unstructured.partition"),
+        "unstructured.partition.pdf": types.ModuleType("unstructured.partition.pdf"),
+        "unstructured.chunking": types.ModuleType("unstructured.chunking"),
+        "unstructured.chunking.title": types.ModuleType("unstructured.chunking.title"),
+        "langchain_openai": types.ModuleType("langchain_openai"),
+        "langchain_chroma": types.ModuleType("langchain_chroma"),
+    }
+    modules["unstructured.partition.pdf"].partition_pdf = lambda **kwargs: []
+    modules["unstructured.chunking.title"].chunk_by_title = lambda elements, **kwargs: elements
+    modules["langchain_openai"].OpenAIEmbeddings = lambda **kwargs: object()
+    modules["langchain_openai"].ChatOpenAI = lambda **kwargs: types.SimpleNamespace(stream=lambda _: iter(()))
+
+    class FakeChroma:
+        def __init__(self, **kwargs):
+            self._collection = types.SimpleNamespace(get=lambda **kwargs: {"ids": [], "metadatas": []},
+                                                     delete=lambda **kwargs: None)
+
+        def add_documents(self, documents, **kwargs):
+            return None
+
+    modules["langchain_chroma"].Chroma = FakeChroma
+    sys.modules.update(modules)
+
+
+_stub_external_runtime()
 
 from app import rag_pipeline
 from app.structured_index import StructuredChunk

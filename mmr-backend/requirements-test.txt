@@ -3,3 +3,7 @@ httpx==0.28.1
 python-multipart==0.0.20
 nh3==0.3.7
 pypdf==6.4.0
+langchain-core>=0.3,<2
+python-dotenv>=1,<2
+boto3>=1.35,<2
+Pillow>=11,<14
