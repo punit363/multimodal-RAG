@@ -107,6 +107,26 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn(secret, str(record))
         self.assertNotIn("private-words", str(record))
 
+    def test_chat_limits_and_audit_exclude_question_text(self):
+        with patch.dict(os.environ, {"RAG_RATE_CHAT": "2", "RAG_DAILY_QUOTA_CHAT": "2"}), \
+                patch.object(main, "answer_query", return_value={"answer": "stub", "sources": []}):
+            first = self.client.post("/api/chat", json={"query": "private financial question"})
+            second = self.client.post("/api/chat", json={"query": "another private question"})
+            third = self.client.post("/api/chat", json={"query": "blocked private question"})
+        self.assertEqual([first.status_code, second.status_code, third.status_code], [200, 200, 429])
+        self.assertIn("Retry-After", third.headers)
+        events = self.client.get("/api/audit-events").json()
+        self.assertEqual([event["outcome"] for event in events[:3]], ["denied", "allowed", "allowed"])
+        self.assertNotIn("private", str(events))
+        self.assertEqual(events[0]["request_id"], third.headers["X-Request-ID"])
+
+    def test_document_quota_blocks_before_upload(self):
+        database.add_document("existing.pdf")
+        with patch.dict(os.environ, {"RAG_MAX_DOCUMENTS": "1"}):
+            response = self.client.post("/api/ingest-stream")
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("Document quota", response.json()["detail"])
+
     def test_chat_stream_forwards_selected_sources_and_persists_messages(self):
         captured = {}
         source = {"filename": "report.pdf", "chunk_id": 1}

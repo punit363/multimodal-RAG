@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 DB_PATH = os.getenv("RAG_DATABASE_PATH", "rag_history.db")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag_db")
@@ -144,6 +144,16 @@ def init_db() -> None:
             body TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_share_comments_share ON share_comments (share_id)")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS usage_windows (
+            key TEXT NOT NULL, window_start INTEGER NOT NULL, count INTEGER NOT NULL,
+            PRIMARY KEY (key, window_start)
+        )""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL,
+            outcome TEXT NOT NULL, request_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events (created_at)")
         cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     logger.info("SQLite database initialized successfully.")
@@ -533,3 +543,42 @@ def list_share_comments(share_id: str) -> List[Dict[str, Any]]:
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute("SELECT id, author, body, created_at FROM share_comments WHERE share_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 100", (share_id,))]
+
+
+def consume_usage(group: str, minute_limit: int, day_limit: int, now: Optional[int] = None) -> Optional[int]:
+    """Atomically consume both fixed windows, or return seconds until retry."""
+    timestamp = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+    minute_start = timestamp // 60 * 60
+    day_start = timestamp // 86400 * 86400
+    windows = ((f"{group}:minute", minute_start, minute_limit, 60),
+               (f"{group}:day", day_start, day_limit, 86400))
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for key, start, limit, duration in windows:
+            row = conn.execute("SELECT count FROM usage_windows WHERE key = ? AND window_start = ?", (key, start)).fetchone()
+            if row and row[0] >= limit:
+                return max(1, start + duration - timestamp)
+        for key, start, _limit, _duration in windows:
+            conn.execute("""INSERT INTO usage_windows (key, window_start, count) VALUES (?, ?, 1)
+                            ON CONFLICT(key, window_start) DO UPDATE SET count = count + 1""", (key, start))
+    return None
+
+
+def count_active_documents() -> int:
+    with get_connection() as conn:
+        return conn.execute("SELECT COUNT(*) FROM documents WHERE status IN ('processing', 'ready')").fetchone()[0]
+
+
+def record_audit_event(action: str, outcome: str, request_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute("INSERT INTO audit_events (action, outcome, request_id, created_at) VALUES (?, ?, ?, ?)",
+                     (action, outcome, request_id, datetime.now(timezone.utc).isoformat()))
+
+
+def list_audit_events(limit: int = 100) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute(
+            "SELECT action, outcome, request_id, created_at FROM audit_events ORDER BY id DESC LIMIT ?",
+            (min(max(limit, 1), 100),),
+        )]

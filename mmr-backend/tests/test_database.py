@@ -29,6 +29,19 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "newer than this application supports"):
             database.init_db()
 
+    def test_usage_windows_are_atomic_and_reset_in_new_window(self):
+        self.assertIsNone(database.consume_usage("chat", 2, 3, now=120))
+        self.assertIsNone(database.consume_usage("chat", 2, 3, now=121))
+        self.assertEqual(database.consume_usage("chat", 2, 3, now=122), 58)
+        self.assertIsNone(database.consume_usage("chat", 2, 3, now=180))
+        self.assertEqual(database.consume_usage("chat", 2, 3, now=181), 86219)
+        with database.get_connection() as conn:
+            minute_count = conn.execute(
+                "SELECT count FROM usage_windows WHERE key = 'chat:minute' AND window_start = 180"
+            ).fetchone()[0]
+        self.assertEqual(minute_count, 1)
+        self.assertIsNone(database.consume_usage("chat", 2, 3, now=86400))
+
     def test_conversation_messages_and_sources_round_trip(self):
         database.create_conversation("conversation-1", "Test conversation")
         database.save_message(

@@ -39,6 +39,7 @@ from app.structured_outputs import build_structured_output
 from app.language import response_language
 from app.operations import readiness_checks
 from app.request_log import log_request
+from app.controls import enforce_controls
 from app.retrieval_filters import RetrievalFilters
 from app.document_extract import extract_sections
 from app.database import (
@@ -73,6 +74,7 @@ from app.database import (
     revoke_share,
     add_share_comment,
     list_share_comments,
+    list_audit_events,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -106,6 +108,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Inside owner_access: unauthenticated private calls do not consume owner quotas.
+app.middleware("http")(enforce_controls)
 
 
 def _owner_key() -> str:
@@ -347,6 +352,11 @@ def owner_logout():
 @app.get("/api/shares")
 def get_shares():
     return list_shares()
+
+
+@app.get("/api/audit-events")
+def get_audit_events(limit: int = 50):
+    return list_audit_events(limit)
 
 
 @app.post("/api/shares")
