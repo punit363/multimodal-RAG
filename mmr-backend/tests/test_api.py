@@ -155,6 +155,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 429)
         self.assertIn("Document quota", response.json()["detail"])
 
+    def test_worker_mode_queues_upload_and_reports_terminal_job(self):
+        job_id = "job-1"
+        with patch.dict(os.environ, {"RAG_INGEST_MODE": "worker"}), \
+                patch.object(main, "enqueue_ingestion_job", return_value={"id": job_id}), \
+                patch.object(main, "get_ingestion_job", return_value={"status": "ready"}):
+            response = self.client.post("/api/ingest-stream", files={
+                "file": ("source.html", b"<html><body>Source</body></html>", "text/html"),
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"job_id": "job-1"', response.text)
+        self.assertIn('"status": "completed"', response.text)
+        self.assertEqual(len(database.list_documents()), 1)
+
     def test_conversation_delete_cascades_and_audits(self):
         database.create_conversation("delete-me", "Private")
         database.save_message("delete-message", "delete-me", "user", "private text")

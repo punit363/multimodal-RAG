@@ -78,6 +78,11 @@ from app.database import (
     add_share_comment,
     list_share_comments,
     list_audit_events,
+    enqueue_ingestion_job,
+    get_ingestion_job,
+    list_ingestion_jobs,
+    retry_dead_ingestion_job,
+    active_ingestion_job_for_document,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -607,6 +612,33 @@ async def ingest_document_stream(file: UploadFile = File(...)):
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     set_source_format(document_id, source_format)
 
+    if os.getenv("RAG_INGEST_MODE", "inline") == "worker":
+        try:
+            job = enqueue_ingestion_job(document_id, filename, storage_name, source_format)
+        except Exception as exc:
+            await _cleanup_failed_ingestion(document_id, file_path, "Could not queue ingestion")
+            logger.error("Could not queue ingestion: error_type=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="Could not queue ingestion.") from exc
+
+        async def queued_events():
+            yield _sse({"step": 1, "label": "Queued for indexing...", "status": "in_progress", "job_id": job["id"]})
+            for _ in range(900):
+                current = await asyncio.to_thread(get_ingestion_job, job["id"])
+                if current and current["status"] == "ready":
+                    yield _sse({"step": 5, "label": "Document Indexing Complete!", "status": "completed",
+                                "filename": filename, "document_id": document_id, "job_id": job["id"]})
+                    return
+                if current and current["status"] == "dead":
+                    yield _sse({"step": -1, "label": "Indexing failed after worker retries.",
+                                "status": "error", "retryable": True, "job_id": job["id"]})
+                    return
+                await asyncio.sleep(2)
+                yield _sse({"step": 2, "label": "Indexing in worker...", "status": "in_progress", "job_id": job["id"]})
+            yield _sse({"step": -1, "label": "Indexing continues in the background. Check job status later.",
+                        "status": "error", "retryable": False, "job_id": job["id"]})
+
+        return StreamingResponse(queued_events(), media_type="text/event-stream")
+
     async def event_generator():
         try:
             yield _sse({"step": 1, "label": "Extracting source content...", "status": "in_progress"})
@@ -658,6 +690,32 @@ async def ingest_document_stream(file: UploadFile = File(...)):
             })
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/ingestion-jobs")
+def get_ingestion_jobs(limit: int = 50):
+    return list_ingestion_jobs(limit)
+
+
+@app.get("/api/ingestion-jobs/{job_id}")
+def get_ingestion_job_status(job_id: str):
+    job = get_ingestion_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Ingestion job not found.")
+    return job
+
+
+@app.post("/api/ingestion-jobs/{job_id}/retry")
+def retry_ingestion_job(job_id: str):
+    job = get_ingestion_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Ingestion job not found.")
+    path = Path(UPLOAD_DIR) / job["storage_name"]
+    if path.resolve().parent != Path(UPLOAD_DIR).resolve() or not path.is_file():
+        raise HTTPException(status_code=409, detail="Original source is unavailable; upload it again.")
+    if not retry_dead_ingestion_job(job_id):
+        raise HTTPException(status_code=409, detail="Only dead-letter jobs can be retried.")
+    return get_ingestion_job(job_id)
 
 
 def _extraction_report(elements, page_count: int) -> dict:
@@ -1060,6 +1118,8 @@ def remove_document(doc_id: str):
     doc = get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
+    if active_ingestion_job_for_document(doc_id):
+        raise HTTPException(status_code=409, detail="Ingestion is still active; wait for it to finish before deleting.")
 
     storage_name = doc.get("storage_name") or doc["filename"]
     file_path = os.path.join(UPLOAD_DIR, storage_name)

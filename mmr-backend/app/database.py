@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 DB_PATH = os.getenv("RAG_DATABASE_PATH", "rag_history.db")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag_db")
@@ -154,6 +154,15 @@ def init_db() -> None:
             created_at TEXT NOT NULL
         )""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events (created_at)")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS ingestion_jobs (
+            id TEXT PRIMARY KEY, document_id TEXT NOT NULL, filename TEXT NOT NULL,
+            storage_name TEXT NOT NULL, source_format TEXT NOT NULL,
+            status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3, next_run_at INTEGER NOT NULL,
+            lease_until INTEGER, error TEXT, created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_claim ON ingestion_jobs (status, next_run_at, lease_until)")
         cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     logger.info("SQLite database initialized successfully.")
@@ -436,6 +445,7 @@ def set_document_tags(doc_id: str, tags: List[str]) -> bool:
 def delete_document_record(doc_id: str) -> None:
     with get_connection() as conn:
         conn.execute("DELETE FROM source_set_documents WHERE document_id = ?", (doc_id,))
+        conn.execute("DELETE FROM ingestion_jobs WHERE document_id = ? AND status IN ('ready', 'dead')", (doc_id,))
         conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
         conn.commit()
     logger.info("Deleted document record: %s", doc_id)
@@ -631,3 +641,105 @@ def retention_summary(now: Optional[datetime] = None, audit_days: int = 90, appl
             conn.execute("DELETE FROM audit_events WHERE created_at < ?", (audit_before,))
             conn.execute("DELETE FROM usage_windows WHERE window_start < ?", (usage_before,))
     return counts
+
+
+def enqueue_ingestion_job(document_id: str, filename: str, storage_name: str,
+                          source_format: str, now: Optional[int] = None) -> Dict[str, Any]:
+    timestamp = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+    job_id = str(uuid.uuid4())
+    created_at = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not conn.execute("SELECT 1 FROM documents WHERE id = ? AND status = 'processing'", (document_id,)).fetchone():
+            raise ValueError("Processing document is unavailable.")
+        conn.execute("""INSERT INTO ingestion_jobs
+            (id, document_id, filename, storage_name, source_format, status,
+             next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)""",
+            (job_id, document_id, filename, storage_name, source_format, timestamp, created_at, created_at))
+    return get_ingestion_job(job_id)
+
+
+def get_ingestion_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def active_ingestion_job_for_document(document_id: str) -> bool:
+    with get_connection() as conn:
+        return conn.execute("""SELECT 1 FROM ingestion_jobs WHERE document_id = ?
+            AND status IN ('queued', 'running') LIMIT 1""", (document_id,)).fetchone() is not None
+
+
+def list_ingestion_jobs(limit: int = 100) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM ingestion_jobs ORDER BY created_at DESC, id DESC LIMIT ?",
+            (min(max(limit, 1), 100),),
+        )]
+
+
+def retry_dead_ingestion_job(job_id: str, now: Optional[int] = None) -> bool:
+    timestamp = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT document_id FROM ingestion_jobs WHERE id = ? AND status = 'dead'", (job_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("""UPDATE ingestion_jobs SET status = 'queued', attempts = 0,
+            next_run_at = ?, lease_until = NULL, error = NULL, updated_at = ? WHERE id = ?""",
+            (timestamp, datetime.fromtimestamp(timestamp, timezone.utc).isoformat(), job_id))
+        conn.execute("UPDATE documents SET status = 'processing', error = NULL WHERE id = ?", (row[0],))
+    return True
+
+
+def claim_ingestion_job(now: Optional[int] = None, lease_seconds: int = 1800) -> Optional[Dict[str, Any]]:
+    """Atomically claim a due job or one whose worker lease expired."""
+    timestamp = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("""SELECT * FROM ingestion_jobs WHERE
+            (status = 'queued' AND next_run_at <= ?) OR
+            (status = 'running' AND lease_until <= ?)
+            ORDER BY created_at, id LIMIT 1""", (timestamp, timestamp)).fetchone()
+        if not row:
+            return None
+        if row["attempts"] >= row["max_attempts"]:
+            conn.execute("UPDATE ingestion_jobs SET status = 'dead', updated_at = ? WHERE id = ?",
+                         (datetime.fromtimestamp(timestamp, timezone.utc).isoformat(), row["id"]))
+            conn.execute("UPDATE documents SET status = 'failed', error = 'Worker lease expired after final attempt.' WHERE id = ?",
+                         (row["document_id"],))
+            return None
+        conn.execute("""UPDATE ingestion_jobs SET status = 'running', attempts = attempts + 1,
+            lease_until = ?, updated_at = ? WHERE id = ?""",
+            (timestamp + lease_seconds, datetime.fromtimestamp(timestamp, timezone.utc).isoformat(), row["id"]))
+        return dict(conn.execute("SELECT * FROM ingestion_jobs WHERE id = ?", (row["id"],)).fetchone())
+
+
+def finish_ingestion_job(job_id: str, now: Optional[int] = None) -> None:
+    timestamp = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+    with get_connection() as conn:
+        conn.execute("""UPDATE ingestion_jobs SET status = 'ready', lease_until = NULL,
+            error = NULL, updated_at = ? WHERE id = ? AND status = 'running'""",
+            (datetime.fromtimestamp(timestamp, timezone.utc).isoformat(), job_id))
+
+
+def fail_ingestion_job(job_id: str, error_type: str, now: Optional[int] = None) -> Dict[str, Any]:
+    """Schedule bounded exponential retry or move the job to the dead-letter state."""
+    timestamp = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM ingestion_jobs WHERE id = ? AND status = 'running'", (job_id,)).fetchone()
+        if not row:
+            raise ValueError("Job is not running.")
+        dead = row["attempts"] >= row["max_attempts"]
+        delay = min(300, 2 ** row["attempts"] * 5)
+        conn.execute("""UPDATE ingestion_jobs SET status = ?, next_run_at = ?,
+            lease_until = NULL, error = ?, updated_at = ? WHERE id = ?""",
+            ("dead" if dead else "queued", timestamp if dead else timestamp + delay,
+             error_type[:80], datetime.fromtimestamp(timestamp, timezone.utc).isoformat(), job_id))
+    return get_ingestion_job(job_id)

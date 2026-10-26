@@ -12,6 +12,7 @@ services:
       - backend-history:/app/data
     environment:
       RAG_DATABASE_PATH: /app/data/rag_history.db
+      RAG_INGEST_MODE: worker
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
       interval: 15s
@@ -29,6 +30,20 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+  worker:
+    build:
+      context: ./mmr-backend
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - ./mmr-backend/.env
+    volumes:
+      - backend-docs:/app/docs
+      - backend-db:/app/db
+      - backend-history:/app/data
+    environment:
+      RAG_DATABASE_PATH: /app/data/rag_history.db
+    restart: unless-stopped
 
 volumes:
   backend-docs:

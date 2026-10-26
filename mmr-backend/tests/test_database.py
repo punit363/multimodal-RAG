@@ -41,6 +41,35 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0], 0)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM usage_windows").fetchone()[0], 0)
 
+    def test_worker_job_claim_retry_dead_letter_and_replay(self):
+        database.add_document("job.html", doc_id="job-doc", storage_name="job-doc.html", status="processing")
+        job = database.enqueue_ingestion_job("job-doc", "job.html", "job-doc.html", "html", now=100)
+        first = database.claim_ingestion_job(now=100, lease_seconds=10)
+        self.assertEqual(first["id"], job["id"])
+        self.assertEqual(first["attempts"], 1)
+        self.assertIsNone(database.claim_ingestion_job(now=101))
+        self.assertEqual(database.fail_ingestion_job(job["id"], "ValueError", now=101)["next_run_at"], 111)
+        self.assertIsNone(database.claim_ingestion_job(now=110))
+        self.assertEqual(database.claim_ingestion_job(now=111)["attempts"], 2)
+        self.assertEqual(database.fail_ingestion_job(job["id"], "ValueError", now=112)["next_run_at"], 132)
+        self.assertEqual(database.claim_ingestion_job(now=132)["attempts"], 3)
+        self.assertEqual(database.fail_ingestion_job(job["id"], "ValueError", now=133)["status"], "dead")
+        self.assertTrue(database.retry_dead_ingestion_job(job["id"], now=134))
+        self.assertEqual(database.get_document("job-doc")["status"], "processing")
+        self.assertEqual(database.claim_ingestion_job(now=134)["attempts"], 1)
+        database.finish_ingestion_job(job["id"], now=135)
+        self.assertEqual(database.get_ingestion_job(job["id"])["status"], "ready")
+
+    def test_expired_final_worker_lease_marks_document_failed(self):
+        database.add_document("expired.html", doc_id="expired", storage_name="expired.html", status="processing")
+        job = database.enqueue_ingestion_job("expired", "expired.html", "expired.html", "html", now=100)
+        self.assertEqual(database.claim_ingestion_job(now=100, lease_seconds=10)["attempts"], 1)
+        self.assertEqual(database.claim_ingestion_job(now=110, lease_seconds=10)["attempts"], 2)
+        self.assertEqual(database.claim_ingestion_job(now=120, lease_seconds=10)["attempts"], 3)
+        self.assertIsNone(database.claim_ingestion_job(now=130, lease_seconds=10))
+        self.assertEqual(database.get_ingestion_job(job["id"])["status"], "dead")
+        self.assertEqual(database.get_document("expired")["status"], "failed")
+
     def test_usage_windows_are_atomic_and_reset_in_new_window(self):
         self.assertIsNone(database.consume_usage("chat", 2, 3, now=120))
         self.assertIsNone(database.consume_usage("chat", 2, 3, now=121))
