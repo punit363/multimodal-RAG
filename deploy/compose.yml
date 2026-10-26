@@ -1,0 +1,73 @@
+services:
+  backend:
+    image: ${MMD_BACKEND_IMAGE:?Build a backend image before deploying}
+    environment: &backend_environment
+      RAG_DEPLOYMENT_MODE: ${MMD_ENVIRONMENT:?Set staging or production}
+      RAG_WORKSPACE_ID: ${MMD_WORKSPACE_ID:?Set a workspace ID}
+      RAG_OWNER_API_KEY_FILE: /run/secrets/owner_key
+      RAG_DATABASE_URL_FILE: /run/secrets/database_url
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+      RAG_ORIGINALS_BUCKET: ${MMD_ORIGINALS_BUCKET:?Set an object bucket}
+      RAG_ORIGINALS_PREFIX: ${MMD_ORIGINALS_PREFIX:?Set a workspace-specific prefix}
+      RAG_CORS_ORIGINS: ${MMD_CORS_ORIGINS:?Set the public HTTPS frontend origin}
+      RAG_COOKIE_SECURE: "true"
+      RAG_INGEST_MODE: worker
+      RAG_UPLOAD_DIR: /app/docs
+      RAG_VECTOR_DIR: /app/db/chroma_db
+    secrets: &backend_secrets
+      - owner_key
+      - database_url
+      - openai_api_key
+    tmpfs:
+      - /app/docs
+    volumes:
+      - vectors:/app/db
+    ports:
+      - "127.0.0.1:${MMD_BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  worker:
+    image: ${MMD_BACKEND_IMAGE:?Build a backend image before deploying}
+    command: ["python", "-m", "app.worker"]
+    environment: *backend_environment
+    secrets: *backend_secrets
+    tmpfs:
+      - /app/docs
+    volumes:
+      - vectors:/app/db
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: ${MMD_FRONTEND_IMAGE:?Build a frontend image before deploying}
+    ports:
+      - "127.0.0.1:${MMD_FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+secrets:
+  owner_key:
+    file: ${MMD_OWNER_KEY_FILE:?Set a mounted owner key file}
+  database_url:
+    file: ${MMD_DATABASE_URL_FILE:?Set a mounted PostgreSQL URL file}
+  openai_api_key:
+    file: ${MMD_OPENAI_KEY_FILE:?Set a mounted OpenAI key file}
+
+volumes:
+  vectors:
