@@ -18,6 +18,10 @@ logger = logging.getLogger("rag_db")
 
 
 def get_connection() -> sqlite3.Connection:
+    database_url = os.getenv("RAG_DATABASE_URL")
+    if database_url:
+        from app.postgres_database import Connection
+        return Connection(database_url)
     conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.execute("PRAGMA journal_mode=WAL;")  # fewer locking errors with concurrent writes
     conn.execute("PRAGMA foreign_keys = OFF;")  # avoid FK failures during stream writes
@@ -26,6 +30,11 @@ def get_connection() -> sqlite3.Connection:
 
 def init_db() -> None:
     """Create the conversations and messages tables if they don't exist."""
+    database_url = os.getenv("RAG_DATABASE_URL")
+    if database_url:
+        from app.postgres_database import init_db as init_postgres
+        init_postgres(database_url, SCHEMA_VERSION)
+        return
     with get_connection() as conn:
         cursor = conn.cursor()
         version = cursor.execute("PRAGMA user_version").fetchone()[0]
@@ -244,13 +253,14 @@ def get_all_conversations() -> List[Dict[str, Any]]:
 def get_recent_messages(conv_id: str, limit: int = 6) -> List[Dict[str, str]]:
     """Return a bounded, chronologically ordered history from one conversation."""
     with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """SELECT role, content FROM messages WHERE conversation_id = ?
                AND role IN ('user', 'assistant') AND content != ''
                ORDER BY created_at DESC, rowid DESC LIMIT ?""",
             (conv_id, min(max(limit, 0), 6)),
         ).fetchall()
-    return [{"role": role, "content": content[:500]} for role, content in reversed(rows)]
+    return [{"role": row["role"], "content": row["content"][:500]} for row in reversed(rows)]
 
 
 def save_message(
@@ -591,7 +601,7 @@ def consume_usage(group: str, minute_limit: int, day_limit: int, now: Optional[i
                 return max(1, start + duration - timestamp)
         for key, start, _limit, _duration in windows:
             conn.execute("""INSERT INTO usage_windows (key, window_start, count) VALUES (?, ?, 1)
-                            ON CONFLICT(key, window_start) DO UPDATE SET count = count + 1""", (key, start))
+                            ON CONFLICT(key, window_start) DO UPDATE SET count = usage_windows.count + 1""", (key, start))
     return None
 
 

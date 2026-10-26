@@ -11,3 +11,4 @@ pydantic
 nh3
 pypdf
 Pillow
+psycopg[binary]>=3.2,<4

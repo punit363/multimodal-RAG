@@ -24,7 +24,16 @@ def _writable_directory(path: str) -> bool:
 def readiness_checks(upload_dir: str, vector_dir: str) -> dict[str, str]:
     """Report only dependency state; never expose paths or database details."""
     checks = {"database": "failed", "uploads": "failed", "vectors": "failed"}
-    if os.path.isfile(database.DB_PATH):
+    if os.getenv("RAG_DATABASE_URL"):
+        try:
+            with closing(database.get_connection()) as conn:
+                conn.execute("SELECT id FROM documents LIMIT 1").fetchone()
+                version = conn.execute("SELECT version FROM rag_schema_version LIMIT 1").fetchone()
+            if version and version[0] == database.SCHEMA_VERSION:
+                checks["database"] = "ok"
+        except Exception:
+            pass
+    elif os.path.isfile(database.DB_PATH):
         try:
             with closing(database.get_connection()) as conn:
                 conn.execute("SELECT id FROM documents LIMIT 1").fetchone()
