@@ -120,6 +120,34 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("private", str(events))
         self.assertEqual(events[0]["request_id"], third.headers["X-Request-ID"])
 
+    def test_metrics_dashboard_and_trace_omit_question_text(self):
+        with patch.object(main, "answer_query", return_value={"answer": "stub", "sources": []}), \
+                self.assertLogs("rag_trace", level="INFO") as traces:
+            response = self.client.post("/api/chat", json={"query": "private compensation data"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["X-Trace-ID"], response.headers["X-Request-ID"])
+        self.assertIn("app;dur=", response.headers["Server-Timing"])
+        self.assertIn(response.headers["X-Trace-ID"], str(traces.output))
+        self.assertNotIn("compensation", str(traces.output))
+        metrics = self.client.get("/api/ops/metrics")
+        self.assertEqual(metrics.status_code, 200)
+        self.assertTrue(any(item["route"] == "/api/chat" for item in metrics.json()["requests"]))
+        self.assertNotIn("compensation", metrics.text)
+        dashboard = self.client.get("/api/ops/dashboard")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn("Operations", dashboard.text)
+        self.assertNotIn("compensation", dashboard.text)
+
+    def test_error_monitoring_keeps_request_id_without_exception_text(self):
+        with patch.object(main, "answer_query", side_effect=RuntimeError("private secret leaked")):
+            response = self.client.post("/api/chat", json={"query": "private question"})
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("private secret", response.text)
+        errors = self.client.get("/api/ops/metrics").json()["recent_errors"]
+        self.assertTrue(any(item["request_id"] == response.headers["X-Request-ID"]
+                            and item["route"] == "/api/chat" for item in errors))
+        self.assertNotIn("private secret", str(errors))
+
     def test_document_quota_blocks_before_upload(self):
         database.add_document("existing.pdf")
         with patch.dict(os.environ, {"RAG_MAX_DOCUMENTS": "1"}):

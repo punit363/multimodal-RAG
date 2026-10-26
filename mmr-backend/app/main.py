@@ -13,13 +13,14 @@ import io
 import hmac
 import hashlib
 import time
+from html import escape
 from urllib.parse import urlsplit
 from pathlib import Path
 from typing import List, Literal, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse, HTMLResponse
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pypdf import PdfReader
@@ -40,6 +41,7 @@ from app.language import response_language
 from app.operations import readiness_checks
 from app.request_log import log_request
 from app.controls import enforce_controls
+from app.telemetry import metrics_snapshot, trace_span
 from app.retrieval_filters import RetrievalFilters
 from app.document_extract import extract_sections
 from app.database import (
@@ -322,6 +324,26 @@ def health_ready():
     return JSONResponse(status_code=200 if ready else 503, content={
         "status": "ready" if ready else "not_ready", "checks": checks,
     })
+
+
+@app.get("/api/ops/metrics")
+def get_operational_metrics():
+    return metrics_snapshot()
+
+
+@app.get("/api/ops/dashboard", response_class=HTMLResponse)
+def operational_dashboard():
+    snapshot = metrics_snapshot()
+    total = sum(item["count"] for item in snapshot["requests"])
+    failures = sum(item["count"] for item in snapshot["requests"] if item["status_class"] == "5xx")
+    safe_json = escape(json.dumps(snapshot, indent=2))
+    return HTMLResponse(
+        "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='15'>"
+        "<title>MultiModal RAG operations</title></head><body>"
+        "<h1>Operations</h1><p>Local process metrics; refreshes every 15 seconds.</p>"
+        f"<p>Requests: {total} · Server errors: {failures}</p><h2>Metrics and recent errors</h2><pre>{safe_json}</pre>"
+        "</body></html>", headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/auth/status")
@@ -698,7 +720,8 @@ def _fetch_public_web_page(url: str) -> tuple[str, bytes]:
 @app.post("/api/ingest-web-page")
 async def ingest_web_page(request: WebPageRequest):
     try:
-        host, body = await asyncio.to_thread(_fetch_public_web_page, request.url)
+        with trace_span("web_fetch"):
+            host, body = await asyncio.to_thread(_fetch_public_web_page, request.url)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     file = UploadFile(file=io.BytesIO(body), filename=f"{host}.html", headers=Headers({"content-type": "text/html"}))
@@ -726,9 +749,11 @@ def chat_query(request: QueryRequest):
             options["history"] = [message.model_dump() for message in request.history]
         if request.language != "auto":
             options["language"] = request.language
-        return answer_query(request.query, k=request.top_k, sources=request.sources or None, **options)
+        with trace_span("chat_answer"):
+            return answer_query(request.query, k=request.top_k, sources=request.sources or None, **options)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query execution failed: {e}")
+        logger.error("Query execution failed: error_type=%s", type(e).__name__)
+        raise HTTPException(status_code=500, detail="Query execution failed.") from e
 
 
 @app.post("/api/chat-stream")
@@ -1014,7 +1039,8 @@ def _validated_output(request: OutputRequest) -> dict:
 
 @app.post("/api/outputs")
 def create_output(request: OutputRequest):
-    return _validated_output(request)
+    with trace_span("structured_output"):
+        return _validated_output(request)
 
 
 @app.post("/api/outputs/report.md")
