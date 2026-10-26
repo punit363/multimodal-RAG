@@ -21,6 +21,7 @@ from typing import List, Literal, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, JSONResponse, HTMLResponse
+from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pypdf import PdfReader
@@ -39,6 +40,7 @@ from app.rag_pipeline import (
 from app.structured_outputs import build_structured_output
 from app.language import response_language
 from app.operations import readiness_checks
+from app import originals
 from app.request_log import log_request
 from app.controls import enforce_controls
 from app.telemetry import metrics_snapshot, trace_span
@@ -559,6 +561,7 @@ async def _cleanup_failed_ingestion(doc_id: str, file_path: str, reason: str) ->
 
     if not cleanup_errors:
         try:
+            await asyncio.to_thread(originals.delete, Path(file_path).name)
             Path(file_path).unlink(missing_ok=True)
             delete_document_record(doc_id)
             return
@@ -603,12 +606,23 @@ async def ingest_document_stream(file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, storage_name)
     await _save_and_validate_source(file, file_path, source_format)
     try:
+        await asyncio.to_thread(originals.put, storage_name, Path(file_path))
+    except Exception as exc:
+        try:
+            await asyncio.to_thread(originals.delete, storage_name)
+        except Exception:
+            logger.error("Could not remove failed original upload: document_id=%s", document_id)
+        Path(file_path).unlink(missing_ok=True)
+        logger.error("Could not persist original: error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Could not persist the uploaded source.") from exc
+    try:
         add_document(filename, doc_id=document_id, storage_name=storage_name, status="processing")
     except ValueError as exc:
         try:
-            os.remove(file_path)
-        except OSError:
-            logger.error("Could not remove upload rejected by document quota: %s", document_id)
+            await asyncio.to_thread(originals.delete, storage_name)
+        except Exception:
+            logger.error("Could not remove stored upload rejected by document quota: %s", document_id)
+        Path(file_path).unlink(missing_ok=True)
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     set_source_format(document_id, source_format)
 
@@ -667,6 +681,8 @@ async def ingest_document_stream(file: UploadFile = File(...)):
             await _run_ingestion_step(store_documents, documents)
 
             update_document_status(document_id, "ready")
+            if originals.enabled():
+                Path(file_path).unlink(missing_ok=True)
             yield _sse({
                 "step": 5,
                 "label": "Document Indexing Complete!",
@@ -1050,13 +1066,23 @@ def get_document_pdf(doc_id: str):
     if Path(storage_name).name != storage_name or not storage_name.lower().endswith(".pdf"):
         raise HTTPException(status_code=404, detail="Document not found.")
     file_path = Path(UPLOAD_DIR) / storage_name
-    if file_path.resolve().parent != Path(UPLOAD_DIR).resolve() or not file_path.is_file():
+    if file_path.resolve().parent != Path(UPLOAD_DIR).resolve():
+        raise HTTPException(status_code=404, detail="Document file not found.")
+    if originals.enabled():
+        try:
+            temporary = originals.download_to_temp(storage_name, UPLOAD_DIR)
+        except Exception as exc:
+            logger.error("Could not retrieve original: error_type=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="Document storage is unavailable.") from exc
+        file_path = temporary
+    elif not file_path.is_file():
         raise HTTPException(status_code=404, detail="Document file not found.")
     return FileResponse(
         file_path,
         media_type="application/pdf",
         filename=document["filename"],
         content_disposition_type="inline",
+        background=BackgroundTask(file_path.unlink, missing_ok=True) if originals.enabled() else None,
     )
 
 
@@ -1068,9 +1094,18 @@ def get_document_file(doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found.")
     storage_name = document.get("storage_name") or document["filename"]
     path = Path(UPLOAD_DIR) / storage_name
-    if Path(storage_name).name != storage_name or path.resolve().parent != Path(UPLOAD_DIR).resolve() or not path.is_file():
+    if Path(storage_name).name != storage_name or path.resolve().parent != Path(UPLOAD_DIR).resolve():
         raise HTTPException(status_code=404, detail="Document file not found.")
-    return FileResponse(path, filename=document["filename"], content_disposition_type="attachment")
+    if originals.enabled():
+        try:
+            path = originals.download_to_temp(storage_name, UPLOAD_DIR)
+        except Exception as exc:
+            logger.error("Could not retrieve original: error_type=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="Document storage is unavailable.") from exc
+    elif not path.is_file():
+        raise HTTPException(status_code=404, detail="Document file not found.")
+    return FileResponse(path, filename=document["filename"], content_disposition_type="attachment",
+                        background=BackgroundTask(path.unlink, missing_ok=True) if originals.enabled() else None)
 
 
 @app.get("/api/summaries")
@@ -1132,6 +1167,7 @@ def remove_document(doc_id: str):
         vector_key = doc["filename"] if storage_name == doc["filename"] else doc_id
         delete_document_vectors(vector_key)
         vectors_deleted = True
+        originals.delete(storage_name)
         delete_document_record(doc_id)
         Path(quarantine_path).unlink(missing_ok=True)
     except Exception as e:

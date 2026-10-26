@@ -29,6 +29,8 @@ sys.modules["app.rag_pipeline"] = fake_rag_pipeline
 
 from app import main  # noqa: E402
 from app.security import sanitize_table_html  # noqa: E402
+from app import originals  # noqa: E402
+from tests.test_originals import FakeS3  # noqa: E402
 
 
 class ApiTests(unittest.TestCase):
@@ -63,6 +65,27 @@ class ApiTests(unittest.TestCase):
         self._quarantine_patch.stop()
         self._database_patch.stop()
         self._temporary_directory.cleanup()
+
+    def test_s3_original_upload_read_and_delete(self):
+        client = FakeS3()
+        with patch.dict(os.environ, {"RAG_ORIGINALS_BUCKET": "test-bucket", "RAG_ORIGINALS_PREFIX": "sources"}), \
+                patch.object(originals, "_client", return_value=client):
+            uploaded = self.client.post("/api/ingest-stream", files={
+                "file": ("source.pdf", self.pdf_bytes(), "application/pdf")})
+            self.assertEqual(uploaded.status_code, 200)
+            completed = next(json.loads(line.removeprefix("data: ")) for line in uploaded.text.splitlines()
+                             if line.startswith("data: ") and '"status": "completed"' in line)
+            doc_id = completed["document_id"]
+            stored_name = f"{doc_id}.pdf"
+            self.assertIn(("test-bucket", f"sources/{stored_name}"), client.objects)
+            self.assertFalse((Path(main.UPLOAD_DIR) / stored_name).exists())
+            response = self.client.get(f"/api/documents/{doc_id}/pdf")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.content, self.pdf_bytes())
+            self.assertEqual(list(Path(main.UPLOAD_DIR).glob(".source-*")), [])
+            deleted = self.client.delete(f"/api/documents/{doc_id}")
+            self.assertEqual(deleted.status_code, 200)
+            self.assertNotIn(("test-bucket", f"sources/{stored_name}"), client.objects)
 
     def test_health_and_conversation_round_trip(self):
         health = self.client.get("/")

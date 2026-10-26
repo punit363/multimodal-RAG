@@ -6,6 +6,7 @@ from contextlib import closing
 from pathlib import Path
 
 from app import database
+from app import originals
 
 
 def _writable_directory(path: str) -> bool:
@@ -46,4 +47,6 @@ def readiness_checks(upload_dir: str, vector_dir: str) -> dict[str, str]:
         checks["uploads"] = "ok"
     if _writable_directory(vector_dir):
         checks["vectors"] = "ok"
+    if originals.enabled():
+        checks["originals"] = "ok" if originals.ready() else "failed"
     return checks
