@@ -30,6 +30,17 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "newer than this application supports"):
             database.init_db()
 
+    def test_version_one_database_upgrades_to_current_schema(self):
+        with database.get_connection() as conn:
+            conn.execute("DROP TABLE audit_events")
+            conn.execute("DROP TABLE usage_windows")
+            conn.execute("PRAGMA user_version = 1")
+        database.init_db()
+        with database.get_connection() as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], database.SCHEMA_VERSION)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM usage_windows").fetchone()[0], 0)
+
     def test_usage_windows_are_atomic_and_reset_in_new_window(self):
         self.assertIsNone(database.consume_usage("chat", 2, 3, now=120))
         self.assertIsNone(database.consume_usage("chat", 2, 3, now=121))
