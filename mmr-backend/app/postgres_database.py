@@ -133,6 +133,10 @@ SCHEMA = (
         next_run_at BIGINT NOT NULL, lease_until BIGINT, error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_claim ON ingestion_jobs (status, next_run_at, lease_until)",
+    """CREATE TABLE IF NOT EXISTS members (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
 )
 
 
@@ -147,5 +151,7 @@ def init_db(url: str, version: int) -> None:
             raise RuntimeError(f"PostgreSQL schema version {current[0]} is newer than this application supports ({version}).")
         if current is None:
             conn.execute("INSERT INTO rag_schema_version (version) VALUES (?)", (version,))
+        elif current[0] == 3 and version == 4:
+            conn.execute("UPDATE rag_schema_version SET version = ?", (version,))
         elif current[0] < version:
             raise RuntimeError("PostgreSQL schema upgrade requires an explicit migration.")

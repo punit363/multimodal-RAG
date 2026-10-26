@@ -87,6 +87,33 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(deleted.status_code, 200)
             self.assertNotIn(("test-bucket", f"sources/{stored_name}"), client.objects)
 
+    def test_workspace_member_roles_and_revocation(self):
+        owner_key = "o" * 40
+        with patch.dict(os.environ, {"RAG_OWNER_API_KEY": owner_key, "RAG_WORKSPACE_ID": "workspace-a"}):
+            self.assertEqual(self.client.get("/api/documents").status_code, 401)
+            self.assertEqual(self.client.post("/api/auth/login", json={"key": owner_key}).status_code, 200)
+            created = self.client.post("/api/members", json={"name": "Reader", "role": "viewer"})
+            self.assertEqual(created.status_code, 200)
+            member = created.json()
+            self.assertNotIn("key", self.client.get("/api/members").json()[0])
+            with TestClient(main.app) as viewer:
+                login = viewer.post("/api/auth/login", json={"key": member["key"]})
+                self.assertEqual(login.json()["role"], "viewer")
+                self.assertEqual(viewer.get("/api/documents").status_code, 200)
+                self.assertEqual(viewer.post("/api/folders", json={"name": "No"}).status_code, 403)
+                self.assertEqual(viewer.get("/api/members").status_code, 403)
+                with patch.dict(os.environ, {"RAG_WORKSPACE_ID": "workspace-b"}):
+                    self.assertEqual(viewer.get("/api/documents").status_code, 401)
+                self.assertEqual(self.client.delete(f"/api/members/{member['id']}").status_code, 200)
+                self.assertEqual(viewer.get("/api/documents").status_code, 401)
+            editor_key = self.client.post("/api/members", json={"name": "Editor", "role": "editor"}).json()["key"]
+            with TestClient(main.app) as editor:
+                self.assertEqual(editor.post("/api/auth/login", json={"key": editor_key}).status_code, 200)
+                self.assertEqual(editor.post("/api/folders", json={"name": "Allowed"}).status_code, 200)
+                self.assertEqual(editor.get("/api/shares").status_code, 403)
+                self.assertEqual(editor.post("/api/auth/logout").status_code, 200)
+                self.assertEqual(editor.get("/api/documents").status_code, 401)
+
     def test_health_and_conversation_round_trip(self):
         health = self.client.get("/")
         created = self.client.post("/api/conversations", json={"title": "Quarterly review"})

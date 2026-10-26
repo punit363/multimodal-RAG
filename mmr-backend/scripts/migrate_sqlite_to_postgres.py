@@ -12,7 +12,7 @@ from app.postgres_database import Connection, init_db
 TABLES = (
     "conversations", "messages", "folders", "documents", "source_sets",
     "source_set_documents", "shares", "share_comments", "usage_windows",
-    "audit_events", "ingestion_jobs",
+    "audit_events", "ingestion_jobs", "members",
 )
 
 

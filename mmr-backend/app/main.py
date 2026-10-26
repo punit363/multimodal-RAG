@@ -12,6 +12,7 @@ import http.client
 import io
 import hmac
 import hashlib
+import secrets
 import time
 from html import escape
 from urllib.parse import urlsplit
@@ -41,6 +42,7 @@ from app.structured_outputs import build_structured_output
 from app.language import response_language
 from app.operations import readiness_checks
 from app import originals
+from app.access import allowed
 from app.request_log import log_request
 from app.controls import enforce_controls
 from app.telemetry import metrics_snapshot, trace_span
@@ -85,6 +87,11 @@ from app.database import (
     list_ingestion_jobs,
     retry_dead_ingestion_job,
     active_ingestion_job_for_document,
+    create_member,
+    member_by_key_hash,
+    get_member,
+    list_members,
+    revoke_member,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -142,13 +149,36 @@ def _owner_session_valid(cookie: Optional[str]) -> bool:
         return False
 
 
+def _member_session(cookie: Optional[str]) -> Optional[dict]:
+    key = _owner_key()
+    if not key or not cookie or not cookie.startswith("m."):
+        return None
+    try:
+        kind, member_id, issued, signature = cookie.split(".", 3)
+        issued_at = int(issued)
+        if kind != "m" or not 0 <= time.time() - issued_at < 24 * 60 * 60:
+            return None
+        payload = f"m.{member_id}.{issued}.{os.getenv('RAG_WORKSPACE_ID', 'default')}"
+        expected = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        return get_member(member_id) if hmac.compare_digest(signature, expected) else None
+    except (ValueError, TypeError):
+        return None
+
+
 @app.middleware("http")
 async def owner_access(request: Request, call_next):
-    """Keep private APIs behind an owner session when sharing is enabled."""
+    """Authenticate every private route and apply workspace member roles."""
     path = request.url.path
     public = path in {"/", "/health/live", "/health/ready", "/api/auth/status", "/api/auth/login"} or path.startswith("/api/public-shares/")
-    if request.method == "OPTIONS" or not _owner_key() or public or _owner_session_valid(request.cookies.get("rag_owner")):
+    if request.method == "OPTIONS" or not _owner_key() or public:
         return await call_next(request)
+    cookie = request.cookies.get("rag_owner")
+    role = "owner" if _owner_session_valid(cookie) else (_member_session(cookie) or {}).get("role")
+    if role and allowed(role, path, request.method):
+        request.state.role = role
+        return await call_next(request)
+    if role:
+        return JSONResponse(status_code=403, content={"detail": "Insufficient workspace role."})
     response = JSONResponse(status_code=401, content={"detail": "Owner session required."})
     origin = request.headers.get("origin")
     if origin in cors_origins:
@@ -290,6 +320,19 @@ class OwnerLoginRequest(BaseModel):
     key: str = Field(min_length=1, max_length=512)
 
 
+class MemberRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    role: Literal["viewer", "editor"]
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, name: str) -> str:
+        name = name.strip()
+        if not name:
+            raise ValueError("Member name is required.")
+        return name
+
+
 class ShareRequest(BaseModel):
     resource_type: Literal["collection", "conversation"]
     resource_id: str = Field(min_length=1, max_length=100)
@@ -356,19 +399,34 @@ def operational_dashboard():
 @app.get("/api/auth/status")
 def auth_status(request: Request):
     required = bool(_owner_key())
-    return {"required": required, "authenticated": not required or _owner_session_valid(request.cookies.get("rag_owner"))}
+    cookie = request.cookies.get("rag_owner")
+    role = "owner" if not required or _owner_session_valid(cookie) else (_member_session(cookie) or {}).get("role")
+    return {"required": required, "authenticated": bool(role), "role": role}
 
 
 @app.post("/api/auth/login")
 def owner_login(request: Request, credentials: OwnerLoginRequest):
     key = _owner_key()
-    if not key or not hmac.compare_digest(credentials.key, key):
+    if not key:
         raise HTTPException(status_code=401, detail="Invalid owner key.")
     issued = str(int(time.time()))
-    signature = hmac.new(key.encode(), issued.encode(), hashlib.sha256).hexdigest()
-    response = JSONResponse({"authenticated": True})
-    response.set_cookie("rag_owner", f"{issued}.{signature}", httponly=True, samesite="lax",
-                        secure=request.url.scheme == "https", max_age=24 * 60 * 60, path="/api")
+    if hmac.compare_digest(credentials.key, key):
+        signature = hmac.new(key.encode(), issued.encode(), hashlib.sha256).hexdigest()
+        cookie = f"{issued}.{signature}"
+        role = "owner"
+    else:
+        key_hash = hmac.new(key.encode(), credentials.key.encode(), hashlib.sha256).hexdigest()
+        member = member_by_key_hash(key_hash)
+        if not member:
+            raise HTTPException(status_code=401, detail="Invalid workspace key.")
+        payload = f"m.{member['id']}.{issued}.{os.getenv('RAG_WORKSPACE_ID', 'default')}"
+        signature = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        cookie = f"m.{member['id']}.{issued}.{signature}"
+        role = member["role"]
+    response = JSONResponse({"authenticated": True, "role": role})
+    response.set_cookie("rag_owner", cookie, httponly=True, samesite="strict",
+                        secure=request.url.scheme == "https" or os.getenv("RAG_COOKIE_SECURE") == "true",
+                        max_age=24 * 60 * 60, path="/api")
     return response
 
 
@@ -377,6 +435,28 @@ def owner_logout():
     response = JSONResponse({"authenticated": False})
     response.delete_cookie("rag_owner", path="/api")
     return response
+
+
+@app.get("/api/members")
+def get_members():
+    return list_members()
+
+
+@app.post("/api/members")
+def add_member(request: MemberRequest):
+    if len(_owner_key()) < 32:
+        raise HTTPException(status_code=503, detail="Set a strong owner key before adding members.")
+    token = secrets.token_urlsafe(32)
+    key_hash = hmac.new(_owner_key().encode(), token.encode(), hashlib.sha256).hexdigest()
+    member = create_member(request.name.strip(), request.role, key_hash)
+    return {**member, "key": token}
+
+
+@app.delete("/api/members/{member_id}")
+def remove_member(member_id: str):
+    if not revoke_member(member_id):
+        raise HTTPException(status_code=404, detail="Active member not found.")
+    return {"status": "revoked", "id": member_id}
 
 
 @app.get("/api/shares")

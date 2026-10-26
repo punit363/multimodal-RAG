@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 DB_PATH = os.getenv("RAG_DATABASE_PATH", "rag_history.db")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag_db")
@@ -172,6 +172,11 @@ def init_db() -> None:
             updated_at TEXT NOT NULL
         )""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_claim ON ingestion_jobs (status, next_run_at, lease_until)")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS members (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
         cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     logger.info("SQLite database initialized successfully.")
@@ -753,3 +758,41 @@ def fail_ingestion_job(job_id: str, error_type: str, now: Optional[int] = None) 
             ("dead" if dead else "queued", timestamp if dead else timestamp + delay,
              error_type[:80], datetime.fromtimestamp(timestamp, timezone.utc).isoformat(), job_id))
     return get_ingestion_job(job_id)
+
+
+def create_member(name: str, role: str, key_hash: str) -> Dict[str, Any]:
+    """Store a random access key digest; never persist or return the key itself."""
+    member_id = str(uuid.uuid4())
+    with get_connection() as conn:
+        conn.execute("INSERT INTO members (id, name, role, key_hash) VALUES (?, ?, ?, ?)",
+                     (member_id, name, role, key_hash))
+    return {"id": member_id, "name": name, "role": role, "status": "active"}
+
+
+def member_by_key_hash(key_hash: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT id, name, role, status FROM members WHERE key_hash = ? AND status = 'active'",
+                           (key_hash,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_member(member_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT id, name, role, status FROM members WHERE id = ? AND status = 'active'",
+                           (member_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_members() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute(
+            "SELECT id, name, role, status, created_at FROM members ORDER BY created_at, id")]
+
+
+def revoke_member(member_id: str) -> bool:
+    with get_connection() as conn:
+        return conn.execute("UPDATE members SET status = 'revoked' WHERE id = ? AND status = 'active'",
+                            (member_id,)).rowcount == 1

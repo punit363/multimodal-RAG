@@ -38,6 +38,10 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(database.get_ingestion_job(job["id"])["status"], "ready")
         self.assertIsNone(database.consume_usage("test", 1, 1, now=100))
         self.assertGreater(database.consume_usage("test", 1, 1, now=100), 0)
+        member = database.create_member("Reader", "viewer", "digest")
+        self.assertEqual(database.member_by_key_hash("digest")["id"], member["id"])
+        self.assertTrue(database.revoke_member(member["id"]))
+        self.assertIsNone(database.get_member(member["id"]))
 
     def test_sqlite_copy_preserves_counts_and_rejects_nonempty_target(self):
         with tempfile.TemporaryDirectory() as root:
