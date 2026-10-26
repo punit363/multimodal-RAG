@@ -49,6 +49,12 @@ class BackupTests(unittest.TestCase):
     def test_verify_rejects_tampered_or_missing_original(self):
         archive = self.root / "snapshot.zip"
         create_backup(self.database_path, self.uploads, self.vectors, archive)
+        tampered = self.root / "tampered.zip"
+        with zipfile.ZipFile(archive) as original, zipfile.ZipFile(tampered, "w") as changed:
+            for name in original.namelist():
+                changed.writestr(name, b"tampered" if name == "docs/report.pdf" else original.read(name))
+        with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            verify_backup(tampered)
         with zipfile.ZipFile(archive, "a") as bundle:
             bundle.writestr("docs/extra.pdf", b"unexpected")
         with self.assertRaisesRegex(ValueError, "member list"):

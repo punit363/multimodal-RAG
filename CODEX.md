@@ -180,7 +180,7 @@ After each priority, update the Phase 4 Notion page with implemented features, c
 
 ## Phase 5 — Production Readiness
 
-**Status:** In progress. Execute Low → Medium → High in reviewable commits. The [Phase 5 engineering log](https://app.notion.com/p/3fa7cd5908fc81baadaad13ceaa29bd2) tracks evidence after each priority.
+**Status:** Low and Medium implemented October 26, 2026; High remains planned. Execute Low → Medium → High in reviewable commits. The [Phase 5 engineering log](https://app.notion.com/p/3fa7cd5908fc81baadaad13ceaa29bd2) tracks evidence after each priority.
 
 **Objective:** Support real users, larger collections, and safe operations. A local single-owner release remains distinct from a production multi-tenant service.
 
@@ -197,10 +197,12 @@ After each priority, update the Phase 4 Notion page with implemented features, c
 
 ### Medium priority — operational controls and recovery
 
-- [ ] Add rate limits, quotas, and privacy-safe audit events for privileged and costly operations.
-- [ ] Define retention/deletion policy and implement verifiable cleanup of expired shares and retained records.
-- [ ] Add consistent backup/restore and migration procedures for SQLite, uploaded originals, and vector data; verify recovery in an isolated environment.
-- [ ] Add metrics, tracing, dashboards, and error monitoring with bounded labels and redaction.
+- [x] Add rate limits, quotas, and privacy-safe audit events for privileged and costly operations.
+- [x] Define retention/deletion policy and implement verifiable cleanup of expired shares and retained records.
+- [x] Add consistent backup/restore and migration procedures for SQLite, uploaded originals, and vector data; verify recovery in an isolated environment.
+- [x] Add metrics, tracing, dashboards, and error monitoring with bounded labels and redaction.
+
+**Medium-priority implementation:** SQLite-backed minute/day windows bound login, chat, ingestion, output, sharing, public views, and comments. A document cap is checked again atomically when registering an upload. Fixed-action audit events record outcome and request ID without user content; owner-only API access shows recent events. Conversations can be deleted with messages and associated links/comments. A dry-run retention command counts expired shares/comments, audit events older than 90 days, and usage windows older than two days before applying cleanup. An offline backup command snapshots SQLite and bundles originals and Chroma files with checksums; verification checks the schema and registered originals, and restore targets only a new directory. Temporary-fixture restore and schema 1→2 migration tests pass. In-process request metrics, bounded error summaries, named trace spans, and an owner-protected HTML dashboard support local operations. The [operations runbook](docs/OPERATIONS.md) gives procedures and limitations. Tenant-specific quotas, managed telemetry, and production recovery targets remain High-priority or deployment acceptance work.
 
 ### High priority — multi-user scale and delivery
 

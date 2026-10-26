@@ -488,8 +488,12 @@ class ApiTests(unittest.TestCase):
         key = "owner-secret-longer-than-thirty-two-characters"
         with patch.dict(os.environ, {"RAG_OWNER_API_KEY": key}):
             self.assertEqual(self.client.get("/api/documents").status_code, 401)
+            self.assertEqual(self.client.get("/api/ops/metrics").status_code, 401)
+            self.assertEqual(self.client.get("/api/ops/dashboard").status_code, 401)
+            self.assertEqual(self.client.get("/api/audit-events").status_code, 401)
             self.assertEqual(self.client.post("/api/auth/login", json={"key": "wrong"}).status_code, 401)
             self.assertEqual(self.client.post("/api/auth/login", json={"key": key}).status_code, 200)
+            self.assertEqual(self.client.get("/api/ops/metrics").status_code, 200)
             created = self.client.post("/api/shares", json={"resource_type": "collection", "resource_id": collection["id"], "permission": "view"})
             self.assertEqual(created.status_code, 200)
             token, share_id = created.json()["token"], created.json()["id"]

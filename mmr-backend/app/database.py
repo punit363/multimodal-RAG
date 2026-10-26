@@ -318,6 +318,14 @@ def add_document(
     stored_name = storage_name or filename
     with get_connection() as conn:
         conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        if status in {"processing", "ready"}:
+            limit = int(os.getenv("RAG_MAX_DOCUMENTS", "500"))
+            if limit < 1:
+                raise ValueError("Document quota must be positive.")
+            count = conn.execute("SELECT COUNT(*) FROM documents WHERE status IN ('processing', 'ready')").fetchone()[0]
+            if count >= limit:
+                raise ValueError("Document quota reached.")
         conn.execute(
             """
             INSERT INTO documents (id, filename, storage_name, status)

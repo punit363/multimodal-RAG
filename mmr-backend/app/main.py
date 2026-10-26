@@ -597,12 +597,14 @@ async def ingest_document_stream(file: UploadFile = File(...)):
     storage_name = f"{document_id}.{source_format}"
     file_path = os.path.join(UPLOAD_DIR, storage_name)
     await _save_and_validate_source(file, file_path, source_format)
-    add_document(
-        filename,
-        doc_id=document_id,
-        storage_name=storage_name,
-        status="processing",
-    )
+    try:
+        add_document(filename, doc_id=document_id, storage_name=storage_name, status="processing")
+    except ValueError as exc:
+        try:
+            os.remove(file_path)
+        except OSError:
+            logger.error("Could not remove upload rejected by document quota: %s", document_id)
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     set_source_format(document_id, source_format)
 
     async def event_generator():

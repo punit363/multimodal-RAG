@@ -44,6 +44,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --no-access-log
 
 The API exposes liveness at `http://localhost:8000/health/live`, dependency readiness at `http://localhost:8000/health/ready`, and interactive documentation at `http://localhost:8000/docs`. See the [operations runbook](docs/OPERATIONS.md) for the checks, request logs, and local incident steps. Set `RAG_OCR_LANGUAGES` to a comma-separated subset of `en,hi,es,fr` if only some OCR packs are installed locally.
 
+Phase 5 Medium adds SQLite-backed usage limits and a document-count cap; configure defaults in `mmr-backend/.env`. Owner-only audit events and local metrics are available at `/api/audit-events` and `/api/ops/metrics`, with a small dashboard at `/api/ops/dashboard`. The runbook documents offline backup/restore, retention cleanup, and schema migration. These controls serve the current single-owner deployment; multi-user isolation and durable monitoring remain Phase 5 High work.
+
 ### Frontend
 
 ```bash

@@ -54,6 +54,13 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(minute_count, 1)
         self.assertIsNone(database.consume_usage("chat", 2, 3, now=86400))
 
+    def test_document_quota_is_enforced_at_registry_insert(self):
+        with patch.dict("os.environ", {"RAG_MAX_DOCUMENTS": "1"}):
+            database.add_document("first.pdf")
+            with self.assertRaisesRegex(ValueError, "Document quota reached"):
+                database.add_document("second.pdf")
+        self.assertEqual(len(database.list_documents()), 1)
+
     def test_retention_dry_run_and_apply_remove_only_expired_records(self):
         moment = datetime(2026, 10, 26, tzinfo=timezone.utc)
         old = database.create_share("conversation", "old", "comment", 7)
