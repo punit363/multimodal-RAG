@@ -45,6 +45,7 @@ from app.document_extract import extract_sections
 from app.database import (
     init_db,
     create_conversation,
+    delete_conversation,
     get_all_conversations,
     get_recent_messages,
     save_message,
@@ -815,6 +816,13 @@ def chat_query_stream(request: StreamQueryRequest):
 def list_conversations():
     """Fetch all persisted conversations and their messages."""
     return get_all_conversations()
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def remove_conversation(conversation_id: str):
+    if not delete_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"status": "deleted", "id": conversation_id}
 
 
 @app.post("/api/conversations")

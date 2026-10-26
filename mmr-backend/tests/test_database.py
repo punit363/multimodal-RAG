@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,6 +42,43 @@ class DatabaseTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(minute_count, 1)
         self.assertIsNone(database.consume_usage("chat", 2, 3, now=86400))
+
+    def test_retention_dry_run_and_apply_remove_only_expired_records(self):
+        moment = datetime(2026, 10, 26, tzinfo=timezone.utc)
+        old = database.create_share("conversation", "old", "comment", 7)
+        fresh = database.create_share("conversation", "fresh", "comment", 7)
+        database.add_share_comment(old["id"], "Reader", "Old comment")
+        database.add_share_comment(fresh["id"], "Reader", "Fresh comment")
+        database.record_audit_event("chat", "allowed", "old-request")
+        database.record_audit_event("chat", "allowed", "fresh-request")
+        database.consume_usage("chat", 10, 100, now=int((moment - timedelta(days=3)).timestamp()))
+        with database.get_connection() as conn:
+            conn.execute("UPDATE shares SET expires_at = ? WHERE id = ?",
+                         ((moment - timedelta(days=1)).isoformat(), old["id"]))
+            conn.execute("UPDATE shares SET expires_at = ? WHERE id = ?",
+                         ((moment + timedelta(days=7)).isoformat(), fresh["id"]))
+            conn.execute("UPDATE audit_events SET created_at = ? WHERE request_id = 'old-request'",
+                         ((moment - timedelta(days=91)).isoformat(),))
+        expected = {"expired_shares": 1, "expired_share_comments": 1,
+                    "old_audit_events": 1, "old_usage_windows": 2}
+        self.assertEqual(database.retention_summary(moment), expected)
+        self.assertEqual(database.retention_summary(moment, apply=True), expected)
+        self.assertEqual(database.retention_summary(moment), {key: 0 for key in expected})
+        self.assertEqual(len(database.list_share_comments(fresh["id"])), 1)
+        self.assertEqual(len(database.list_audit_events()), 1)
+
+    def test_delete_conversation_revokes_its_links_and_comments(self):
+        database.create_conversation("to-delete", "Private")
+        database.save_message("m1", "to-delete", "user", "secret")
+        share = database.create_share("conversation", "to-delete", "comment", 7)
+        database.add_share_comment(share["id"], "Reader", "Comment")
+        self.assertTrue(database.delete_conversation("to-delete"))
+        self.assertFalse(database.delete_conversation("to-delete"))
+        self.assertIsNone(database.get_share_by_token(share["token"]))
+        self.assertEqual(database.get_all_conversations(), [])
+        with database.get_connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM share_comments").fetchone()[0], 0)
 
     def test_conversation_messages_and_sources_round_trip(self):
         database.create_conversation("conversation-1", "Test conversation")

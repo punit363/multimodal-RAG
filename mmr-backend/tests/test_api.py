@@ -127,6 +127,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 429)
         self.assertIn("Document quota", response.json()["detail"])
 
+    def test_conversation_delete_cascades_and_audits(self):
+        database.create_conversation("delete-me", "Private")
+        database.save_message("delete-message", "delete-me", "user", "private text")
+        share = database.create_share("conversation", "delete-me", "comment", 7)
+        database.add_share_comment(share["id"], "Reader", "private comment")
+        response = self.client.delete("/api/conversations/delete-me")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.delete("/api/conversations/delete-me").status_code, 404)
+        self.assertIsNone(database.get_share_by_token(share["token"]))
+        self.assertEqual(database.get_all_conversations(), [])
+        self.assertEqual(self.client.get("/api/audit-events").json()[1]["action"], "conversation_delete")
+
     def test_chat_stream_forwards_selected_sources_and_persists_messages(self):
         captured = {}
         source = {"filename": "report.pdf", "chunk_id": 1}

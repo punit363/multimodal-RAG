@@ -171,6 +171,19 @@ def create_conversation(conv_id: str, title: str) -> Dict[str, Any]:
     return {"id": conv_id, "title": title, "messages": []}
 
 
+def delete_conversation(conv_id: str) -> bool:
+    """Remove a conversation, its messages, and any links and comments to it."""
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
+        if cursor.rowcount == 0:
+            return False
+        conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))
+        conn.execute("""DELETE FROM share_comments WHERE share_id IN
+                        (SELECT id FROM shares WHERE resource_type = 'conversation' AND resource_id = ?)""", (conv_id,))
+        conn.execute("DELETE FROM shares WHERE resource_type = 'conversation' AND resource_id = ?", (conv_id,))
+    return True
+
+
 def get_all_conversations() -> List[Dict[str, Any]]:
     """Return every conversation (newest first) with its messages (oldest first)."""
     with get_connection() as conn:
@@ -582,3 +595,31 @@ def list_audit_events(limit: int = 100) -> List[Dict[str, Any]]:
             "SELECT action, outcome, request_id, created_at FROM audit_events ORDER BY id DESC LIMIT ?",
             (min(max(limit, 1), 100),),
         )]
+
+
+def retention_summary(now: Optional[datetime] = None, audit_days: int = 90, apply: bool = False) -> Dict[str, int]:
+    """Count or delete expired links and bounded operational records."""
+    if not 1 <= audit_days <= 3650:
+        raise ValueError("Audit retention must be 1 to 3650 days.")
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        raise ValueError("Retention time must include a timezone.")
+    expired_at = moment.astimezone(timezone.utc).isoformat()
+    audit_before = (moment - timedelta(days=audit_days)).astimezone(timezone.utc).isoformat()
+    usage_before = int(moment.timestamp()) - 2 * 86400
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        counts = {
+            "expired_shares": conn.execute("SELECT COUNT(*) FROM shares WHERE expires_at <= ?", (expired_at,)).fetchone()[0],
+            "expired_share_comments": conn.execute("""SELECT COUNT(*) FROM share_comments WHERE share_id IN
+                (SELECT id FROM shares WHERE expires_at <= ?)""", (expired_at,)).fetchone()[0],
+            "old_audit_events": conn.execute("SELECT COUNT(*) FROM audit_events WHERE created_at < ?", (audit_before,)).fetchone()[0],
+            "old_usage_windows": conn.execute("SELECT COUNT(*) FROM usage_windows WHERE window_start < ?", (usage_before,)).fetchone()[0],
+        }
+        if apply:
+            conn.execute("""DELETE FROM share_comments WHERE share_id IN
+                (SELECT id FROM shares WHERE expires_at <= ?)""", (expired_at,))
+            conn.execute("DELETE FROM shares WHERE expires_at <= ?", (expired_at,))
+            conn.execute("DELETE FROM audit_events WHERE created_at < ?", (audit_before,))
+            conn.execute("DELETE FROM usage_windows WHERE window_start < ?", (usage_before,))
+    return counts

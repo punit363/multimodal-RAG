@@ -48,6 +48,8 @@ def _audit_action(request: Request, operation: str | None) -> str | None:
         return "share_revoke"
     if request.method == "DELETE" and request.url.path.startswith("/api/documents/"):
         return "document_delete"
+    if request.method == "DELETE" and request.url.path.startswith("/api/conversations/"):
+        return "conversation_delete"
     if request.method == "PATCH" and request.url.path.endswith("/extraction"):
         return "extraction_review"
     return None
