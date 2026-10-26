@@ -103,8 +103,8 @@ The phased roadmap and priority status are tracked in [CODEX.md](CODEX.md). The 
 ## Current limitations
 
 - DOCX, PPTX, XLSX, image, and HTML extraction currently indexes text. PDF extraction also preserves tables and images. Image files require Tesseract OCR; non-PDF source cards download the original file rather than opening the PDF viewer.
-- The owner key provides one protected workspace, not separate user accounts or per-user document ownership. Configure it before creating share links; full multi-user identity and governance remain Phase 5 work.
-- Ingestion runs within the API process and is intended for local MVP use.
+- The owner key protects one workspace and can issue revocable viewer/editor member keys. Production-like deployments isolate one workspace per stack; they do not yet route multiple tenants through one service. See the [Phase 5 deployment guide](docs/PRODUCTION.md) for PostgreSQL/S3 migration, secrets, release/rollback, and acceptance checks.
+- Ingestion runs inside the API process by default for local use. Docker Compose starts a durable worker with retries and dead-letter jobs.
 - Phase 2 is complete. Existing PDFs need re-ingestion for new element-type, location-status, and content-type metadata. A representative quality evaluation remains open in Phase 3.
 - Source cards show normalized cosine retrieval similarity from 0 to 100%; scores below 50% are marked **Weak match**. This measures question-to-chunk similarity, not answer correctness or model confidence.
 

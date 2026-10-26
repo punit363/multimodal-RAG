@@ -180,7 +180,7 @@ After each priority, update the Phase 4 Notion page with implemented features, c
 
 ## Phase 5 — Production Readiness
 
-**Status:** Low and Medium implemented October 26, 2026; High remains planned. Execute Low → Medium → High in reviewable commits. The [Phase 5 engineering log](https://app.notion.com/p/3fa7cd5908fc81baadaad13ceaa29bd2) tracks evidence after each priority.
+**Status:** Low and Medium implemented October 26, 2026. High implementation is in progress: authentication, isolated workspace stacks, PostgreSQL/S3 migration, durable workers, and release/acceptance tooling are coded; hosted acceptance remains open. Execute Low → Medium → High in reviewable commits. The [Phase 5 engineering log](https://app.notion.com/p/3fa7cd5908fc81baadaad13ceaa29bd2) tracks evidence after each priority.
 
 **Objective:** Support real users, larger collections, and safe operations. A local single-owner release remains distinct from a production multi-tenant service.
 
@@ -206,10 +206,12 @@ After each priority, update the Phase 4 Notion page with implemented features, c
 
 ### High priority — multi-user scale and delivery
 
-- [ ] Add authentication, tenant/workspace isolation, and role-based access across APIs, documents, vectors, conversations, and shares.
-- [ ] Move durable metadata and originals to PostgreSQL and object storage with tested migrations.
-- [ ] Move ingestion to durable background workers with retries and dead-letter handling.
-- [ ] Add managed secrets, deployment environments, automated deployment/rollback, and load/security/recovery/end-to-end acceptance tests against defined targets.
+- [x] Add member-key authentication and role-based access across private APIs, documents, conversations, and shares; isolate each workspace in its own database, vector volume, object prefix, and deployment.
+- [x] Move durable metadata and originals to optional PostgreSQL and S3-compatible object storage with tested migration paths.
+- [x] Move ingestion to durable background workers with retries and dead-letter handling.
+- [ ] Add managed secret-file injection, staging/production configuration, automated image deployment/rollback, and load/security/recovery/end-to-end acceptance tests against defined targets. Tooling is implemented; live target validation and recovery objectives remain open.
+
+**High-priority implementation so far:** PostgreSQL schema version 5, an atomic SQLite copy script, and optional checksum-verified S3 originals support migration from a stopped local workspace. One API and worker share a workspace-bound Chroma volume; object storage supplies originals without a shared upload volume. Owner, editor, and viewer member keys provide revocable API access; owner/member cookies include the workspace identity. Docker Compose staging/production definitions, mounted secret files, fail-fast configuration checks, Git-SHA-tagged release/rollback tooling, and an HTTP acceptance runner are ready for a target. PostgreSQL integration, S3 path, role, worker, configuration, and rollback tests pass. Docker is not running locally, and no hosted staging/recovery target or RTO/RPO was supplied, so the last acceptance item remains open. See [deployment and migration details](docs/PRODUCTION.md).
 
 ### Execution record for every priority
 
