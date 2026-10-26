@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 DB_PATH = os.getenv("RAG_DATABASE_PATH", "rag_history.db")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag_db")
@@ -177,6 +177,13 @@ def init_db() -> None:
             key_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""")
+        cursor.execute("CREATE TABLE IF NOT EXISTS workspace_binding (workspace_id TEXT PRIMARY KEY)")
+        workspace = os.getenv("RAG_WORKSPACE_ID", "default")
+        bound = cursor.execute("SELECT workspace_id FROM workspace_binding LIMIT 1").fetchone()
+        if bound and bound[0] != workspace:
+            raise RuntimeError("Database belongs to a different workspace.")
+        if not bound:
+            cursor.execute("INSERT INTO workspace_binding (workspace_id) VALUES (?)", (workspace,))
         cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     logger.info("SQLite database initialized successfully.")

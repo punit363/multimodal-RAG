@@ -1,4 +1,4 @@
-"""Copy a stopped, version-3 SQLite registry into an empty PostgreSQL database."""
+"""Copy a stopped, current-schema SQLite registry into an empty PostgreSQL database."""
 
 import argparse
 import os

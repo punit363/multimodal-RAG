@@ -9,6 +9,7 @@ from pypdf import PdfReader
 
 from app import database, main
 from app import originals
+from app.deployment import validate_deployment_config
 
 
 logger = logging.getLogger("rag_worker")
@@ -64,6 +65,7 @@ def main_cli() -> None:
     args = parser.parse_args()
     if args.poll_seconds < 0.1:
         parser.error("Poll interval must be at least 0.1 seconds.")
+    validate_deployment_config()
     database.init_db()
     if args.once:
         run_once()

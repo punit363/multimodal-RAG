@@ -58,6 +58,11 @@ class PostgresTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 migrate(source, self.url)
 
+    def test_postgres_refuses_different_workspace(self):
+        with patch.dict(os.environ, {"RAG_WORKSPACE_ID": "other-workspace"}):
+            with self.assertRaises(RuntimeError):
+                database.init_db()
+
 
 if __name__ == "__main__":
     unittest.main()

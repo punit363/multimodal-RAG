@@ -4,6 +4,7 @@ The adapter keeps the small DB-API surface used by database.py while PostgreSQL
 owns transactions and concurrent writes. It never interpolates query values.
 """
 
+import os
 import re
 from typing import Any
 
@@ -137,6 +138,7 @@ SCHEMA = (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
         key_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    "CREATE TABLE IF NOT EXISTS workspace_binding (workspace_id TEXT PRIMARY KEY)",
 )
 
 
@@ -151,7 +153,13 @@ def init_db(url: str, version: int) -> None:
             raise RuntimeError(f"PostgreSQL schema version {current[0]} is newer than this application supports ({version}).")
         if current is None:
             conn.execute("INSERT INTO rag_schema_version (version) VALUES (?)", (version,))
-        elif current[0] == 3 and version == 4:
+        elif current[0] in {3, 4} and version == 5:
             conn.execute("UPDATE rag_schema_version SET version = ?", (version,))
         elif current[0] < version:
             raise RuntimeError("PostgreSQL schema upgrade requires an explicit migration.")
+        workspace = os.getenv("RAG_WORKSPACE_ID", "default")
+        bound = conn.execute("SELECT workspace_id FROM workspace_binding LIMIT 1").fetchone()
+        if bound and bound[0] != workspace:
+            raise RuntimeError("Database belongs to a different workspace.")
+        if not bound:
+            conn.execute("INSERT INTO workspace_binding (workspace_id) VALUES (?)", (workspace,))

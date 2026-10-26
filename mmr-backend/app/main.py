@@ -43,6 +43,7 @@ from app.language import response_language
 from app.operations import readiness_checks
 from app import originals
 from app.access import allowed
+from app.deployment import validate_deployment_config
 from app.request_log import log_request
 from app.controls import enforce_controls
 from app.telemetry import metrics_snapshot, trace_span
@@ -105,6 +106,7 @@ app = FastAPI(title="Multi-Modal RAG API")
 
 @app.on_event("startup")
 def startup_event():
+    validate_deployment_config()
     init_db()
 
 
@@ -139,11 +141,19 @@ def _owner_session_valid(cookie: Optional[str]) -> bool:
     if not key or not cookie:
         return False
     try:
-        issued, signature = cookie.split(".", 1)
+        parts = cookie.split(".")
+        if len(parts) == 3 and parts[0] == "o":
+            _, issued, signature = parts
+            payload = f"o.{os.getenv('RAG_WORKSPACE_ID', 'default')}.{issued}"
+        elif len(parts) == 2 and os.getenv("RAG_DEPLOYMENT_MODE", "local") == "local":
+            issued, signature = parts
+            payload = issued  # Accept pre-upgrade local owner sessions until expiry.
+        else:
+            return False
         issued_at = int(issued)
         if not 0 <= time.time() - issued_at < 24 * 60 * 60:
             return False
-        expected = hmac.new(key.encode(), issued.encode(), hashlib.sha256).hexdigest()
+        expected = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(signature, expected)
     except (ValueError, TypeError):
         return False
@@ -411,8 +421,9 @@ def owner_login(request: Request, credentials: OwnerLoginRequest):
         raise HTTPException(status_code=401, detail="Invalid owner key.")
     issued = str(int(time.time()))
     if hmac.compare_digest(credentials.key, key):
-        signature = hmac.new(key.encode(), issued.encode(), hashlib.sha256).hexdigest()
-        cookie = f"{issued}.{signature}"
+        payload = f"o.{os.getenv('RAG_WORKSPACE_ID', 'default')}.{issued}"
+        signature = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        cookie = f"o.{issued}.{signature}"
         role = "owner"
     else:
         key_hash = hmac.new(key.encode(), credentials.key.encode(), hashlib.sha256).hexdigest()

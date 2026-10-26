@@ -25,10 +25,12 @@ from app.ranking import cosine_similarity, keyword_rank, reciprocal_rank_fusion,
 from app.query_rewrite import rewrite_followup_query
 from app.structured_index import structured_chunks, table_search_text
 from app.language import ocr_languages, language_instruction, insufficient_evidence_message
+from app.workspace import bind_vector_directory
 
 load_dotenv()
 
 PERSIST_DIR = os.getenv("RAG_VECTOR_DIR", "db/chroma_db")
+bind_vector_directory(PERSIST_DIR, os.getenv("RAG_WORKSPACE_ID", "default"))
 UNVERIFIED_COMPARISON_ANSWER = "The comparison could not be verified against every selected document. Try a more specific question."
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
