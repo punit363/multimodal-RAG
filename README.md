@@ -85,17 +85,12 @@ The Compose setup persists uploaded files, the SQLite database, and the Chroma i
 
 The backend image includes OCR and document-inference dependencies. Keep several gigabytes of free Docker storage available for the first build.
 
-## Validation
+## Build checks
 
 ```bash
-cd mmr-backend
-python -m unittest discover -s tests -v
-
-cd ../mmr-frontend
+cd mmr-frontend
 npm run lint
-npm test
 npm run build
-npm run test:e2e
 ```
 
 The phased roadmap and priority status are tracked in [CODEX.md](CODEX.md). The [Phase 5 engineering log](https://app.notion.com/p/3fa7cd5908fc81baadaad13ceaa29bd2) records production-readiness work after each priority. The [evaluation guide](mmr-backend/evaluation/README.md) explains how to capture a fixed answer-quality baseline before tuning retrieval.

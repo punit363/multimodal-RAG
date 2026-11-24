@@ -52,4 +52,4 @@ For Docker volume paths, use `/app/data/rag_history.db`, `/app/docs`, and `/app/
 
 ## Validation
 
-Run `cd mmr-backend && ./venv/bin/python -m unittest discover -s tests -q`. The suite covers readiness, privacy-safe logs, quotas, audit, retention, SQLite migration, isolated backup/restore, metrics, trace IDs, and existing API behavior. Run `docker compose config` to check Compose settings. A live Docker image rebuild and runtime smoke test remain a separate verification when the Docker daemon is available.
+Run `docker compose config` to check Compose settings. A live Docker image rebuild and runtime smoke check remain separate verification when the Docker daemon is available.

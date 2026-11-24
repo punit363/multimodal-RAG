@@ -35,12 +35,3 @@ Select **Launch RAG Explorer** to enter the document workspace.
 ## 5. Verify persistence
 
 Refresh the page and confirm that conversations, messages, citations, and the document list are restored from the backend.
-
-## Automated demo coverage
-
-The Playwright workflow reproduces the landing-page and cited-answer path with deterministic mocked API responses:
-
-```bash
-cd mmr-frontend
-npm run test:e2e
-```
